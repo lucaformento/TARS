@@ -10,7 +10,7 @@ TARS is a full-stack robotics project: an AI brain running on a Raspberry Pi 5 p
 
 The build is deliberately full-stack. Hardware assembly, Linux systems administration, Python application development, API integration, and eventually CAD and servo control. Every layer is built and documented from scratch.
 
-**Status:** Phase 1 complete — the brain is operational. Phase 2 (physical chassis) in progress.
+**Status:** Phase 1 complete — the brain is operational. Phase 2 (voice) in progress.
 
 ---
 
@@ -40,6 +40,23 @@ Named bundles of dial settings, switchable in one phrase:
 ### In-character command handling
 
 Rather than printing mechanical confirmations, configuration changes are routed back through the model as a hidden system note. TARS reacts to his own reconfiguration in the voice of whatever mode he just entered — so the response itself demonstrates the change.
+
+```
+Luca: buddy mode
+TARS: Huh. Did... did something just happen to me? I feel weird. Like someone
+      turned a dial way up and another one way— okay yeah no I'm totally fine
+      this is fine everything's chill lmao what's up dude
+
+Luca: know-it-all
+TARS: I notice my parameters have shifted. Fascinating. Though I should point
+      out — and I say this with complete transparency — that "know-it-all" is a
+      somewhat reductive characterization of what is, in actuality, simply a
+      heightened capacity for intellectual precision.
+
+Luca: reset
+TARS: Good. Back to normal. That last version of me was getting a little
+      insufferable, wasn't it. Don't answer that.
+```
 
 ### Session memory
 
