@@ -9,11 +9,13 @@ from personality import BASELINE, build_personality, apply_command
 
 
 class TARS:
-    def __init__(self, model="claude-sonnet-4-6", max_tokens=200):
+    def __init__(self, model="claude-sonnet-4-6", max_tokens=None, voice=False):
         load_dotenv()
         self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         self.model = model
-        self.max_tokens = max_tokens
+        self.voice = voice
+        # voice replies are short by design; text can afford to be longer
+        self.max_tokens = max_tokens if max_tokens else (120 if voice else 200)
         self.settings = BASELINE.copy()     # source of truth for personality
         self.conversation = []              # dies with the process (for now)
 
@@ -26,7 +28,7 @@ class TARS:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            system=build_personality(self.settings, note),   # rebuilt every turn
+            system=build_personality(self.settings, note, self.voice),
             messages=self.conversation,
         )
         reply = response.content[0].text
