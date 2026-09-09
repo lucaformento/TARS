@@ -1,147 +1,159 @@
+<p align="center">
+  <img src="docs/assets/tars-banner.svg" alt="TARS — a conversational robot in progress. Voice online; body planned." width="100%">
+</p>
+
+<p align="center">
+  <strong>A Raspberry Pi, a voice, and a personality you can reconfigure mid-conversation.</strong>
+</p>
+
+<p align="center">
+  <a href="#what-works-today">Features</a> ·
+  <a href="#inside-the-voice-loop">Architecture</a> ·
+  <a href="#making-him-faster">Performance</a> ·
+  <a href="#run-the-text-interface">Get started</a> ·
+  <a href="#next-on-the-bench">Roadmap</a>
+</p>
+
 # TARS
 
-A real-life TARS from *Interstellar*. Voice-driven AI, custom hardware, 3D-printed articulated body. End-to-end build spanning embedded systems, machine learning, and robotics.
+I'm building a conversational robot inspired by TARS from *Interstellar*, starting with the software that makes him listen, respond, and sound like a character. The current prototype runs on a Raspberry Pi 5: wake-word detection, speech recognition, streamed replies, local speech synthesis, and adjustable personality all work together.
 
----
+**Current stage: working voice prototype.** The articulated body, servo control, and sensors are planned. Today's engineering work is in Python, Linux, audio processing, API integration, and performance measurement.
 
-## About
+## What works today
 
-TARS is a full-stack robotics project: an AI brain running on a Raspberry Pi 5 paired with a 3D-printed articulated chassis. The goal is a self-contained, untethered robot with a distinct personality — one you can reconfigure by talking to it.
+- **Wake once, keep talking.** Say “Hey Jarvis,” then ask follow-up questions without repeating the wake word. After eight seconds without speech, TARS returns to listening for it.
+- **Speak as sentences arrive.** The voice interface starts synthesizing complete sentences from the response stream before collecting the entire reply.
+- **Keep the voice loaded.** Piper initializes once at startup and is reused throughout the session.
+- **Change his personality live.** Four application-owned dials shape the next response, with presets and conversational acknowledgments.
+- **Remember the conversation.** History survives wake/sleep cycles for the lifetime of the process.
+- **See where the time goes.** Logs expose transcription time, first text, first speech chunk, synthesis, playback, and gaps between playback calls.
 
-The build is deliberately full-stack. Hardware assembly, Linux systems administration, Python application development, API integration, and eventually CAD and servo control. Every layer is built and documented from scratch.
+Wake-word detection, transcription, and speech synthesis run locally. Response generation uses the Anthropic API and requires internet access; the application sends conversation text to that API.
 
-**Status:** Phase 1 complete — the brain is operational. Phase 2 (voice) in progress.
+## Inside the voice loop
 
----
-
-## Features
-
-### Configurable personality system
-
-TARS's behavior is driven by four numeric dials that can be adjusted mid-conversation through natural language:
-
-| Dial | Range | Controls |
-|---|---|---|
-| Humor | 0–100 | How playful and joke-driven he is |
-| Sarcasm | 0–100 | How much bite and edge his wit carries |
-| Honesty | 0–100 | How blunt versus diplomatic he is |
-| Intellect | 0–100 | Vocabulary and register — casual slang at the low end, formal and precise at the high end |
-
-Saying *"set humor to 90"* or *"buddy mode"* updates the underlying state and the system prompt is rebuilt on the next turn, so the change takes effect immediately.
-
-### Preset modes
-
-Named bundles of dial settings, switchable in one phrase:
-
-- **Baseline / Reset** — his default configuration (75 / 60 / 90 / 50)
-- **Know-it-all** — high intellect, maximum honesty, minimal humor. Formal and precise.
-- **Buddy mode** — high humor and sarcasm, low intellect. Casual and loose.
-
-### In-character command handling
-
-Rather than printing mechanical confirmations, configuration changes are routed back through the model as a hidden system note. TARS reacts to his own reconfiguration in the voice of whatever mode he just entered — so the response itself demonstrates the change.
-
-```
-Luca: buddy mode
-TARS: Huh. Did... did something just happen to me? I feel weird. Like someone
-      turned a dial way up and another one way— okay yeah no I'm totally fine
-      this is fine everything's chill lmao what's up dude
-
-Luca: know-it-all
-TARS: I notice my parameters have shifted. Fascinating. Though I should point
-      out — and I say this with complete transparency — that "know-it-all" is a
-      somewhat reductive characterization of what is, in actuality, simply a
-      heightened capacity for intellectual precision.
-
-Luca: reset
-TARS: Good. Back to normal. That last version of me was getting a little
-      insufferable, wasn't it. Don't answer that.
+```mermaid
+flowchart LR
+    mic["Microphone<br/>Wake + capture"] --> stt["faster-whisper<br/>Transcribe locally"]
+    stt --> brain["TARS brain<br/>Dials + history"]
+    brain --> api["Anthropic API<br/>Stream reply text"]
+    api --> speech["Piper + aplay<br/>Speak sentences"]
+    speech -. "Flush + follow-up" .-> mic
+    style api fill:#2d241a,stroke:#c79259,color:#f3ede3
 ```
 
-### Session memory
+The current playback loop is synchronous: playing one sentence delays reading and synthesizing the next. Remote generation can continue while the client plays audio, subject to stream buffering. Preparing audio during playback is a next step.
 
-Full conversation history is maintained and passed with each request, so TARS retains context across a session.
+| File | Responsibility |
+| :--- | :--- |
+| [`personality.py`](personality.py) | Pure command parsing, presets, and prompt construction. |
+| [`brain.py`](brain.py) | Owns personality state, conversation history, and API streaming. |
+| [`tars.py`](tars.py) | Terminal interface; collects streamed text into a complete reply. |
+| [`tars_voice.py`](tars_voice.py) | Audio capture, wake/follow-up loop, sentence splitting, synthesis, playback, and timing. |
 
----
+Three decisions shape the implementation:
 
-## Architecture
+**State lives in Python.** The model receives the current dial values on every request. Configuration changes are parsed by the application.
 
+**Commands and conversation take separate paths.** Command events enter the system prompt, while history preserves the user's actual words.
+
+**Each interface owns its presentation.** The brain yields text deltas. The voice interface splits and sanitizes them for speech; the terminal interface joins them for display.
+
+## Personality, with actual state
+
+| Dial | Baseline | Controls |
+| :--- | ---: | :--- |
+| Humor | 75 | Seriousness versus playfulness |
+| Sarcasm | 60 | Sincerity versus dry edge |
+| Honesty | 90 | Diplomatic versus blunt phrasing |
+| Intellect | 50 | Vocabulary and register |
+
+All dials range from 0 to 100. These are style controls, not guarantees of factual accuracy or changes to the model's underlying capabilities.
+
+Try these in the text interface:
+
+```text
+set humor to 90
+buddy mode
+know-it-all
+what are your settings?
+reset
 ```
-User input
-    │
-    ├─► Command parser ──► updates personality state (dict)
-    │                              │
-    │                              ▼
-    │                    build_personality() ──► system prompt
-    │                                                  │
-    └──────────────► conversation history ─────────────┤
-                                                       ▼
-                                              Anthropic API
-                                                       │
-                                                       ▼
-                                              TARS response
-```
 
-Personality state is owned by the application, not the model. The model receives the current values as authoritative input on every turn, which keeps configuration reliable while leaving voice and tone to the model.
+The same parser handles transcribed speech. Spoken number words and variations such as “know it all” still need better normalization. Voice delivery, including the occasional flat “Huh,” is being tuned.
 
----
+## Making him faster
 
-## Tech stack
+The first major win came from changing the lifetime of a resource: the old speech path launched Piper and loaded the voice model for every reply. Reusing a loaded `PiperVoice` removed about **two seconds per call** in a paired benchmark on the Pi 5.
 
-**Hardware** — Raspberry Pi 5 (8GB), active cooling, USB audio interface
+| Input | Fresh Piper process | Loaded voice reused | Time saved |
+| :--- | ---: | ---: | ---: |
+| Short: “Test.” | 2.107 s | **0.051 s** | 2.056 s · **97.6%** |
+| Paragraph producing about 10 s of audio | 3.234 s | **1.133 s** | 2.101 s · **65.0%** |
 
-**Software** — Python 3.13, Anthropic Claude API, `python-dotenv`
+These are median **WAV-generation times**, with four measured trials per input and method, warm-ups excluded, and execution order alternated. They do not measure complete conversational latency.
 
-**Environment** — Raspberry Pi OS (Debian 13, 64-bit), managed headless over SSH
+In the first live streaming session, the estimated interval from detected speech end to the first playback request was **4.54–9.52 seconds across four turns**. Two turns were below five seconds; transcription and response-stream delays still caused longer waits. The metric excludes playback startup and is not a measurement of the first audible sound.
 
-**Planned** — Whisper (speech-to-text), TTS output, PCA9685 servo control, Fusion 360 / Onshape for chassis design
+See the [performance notes](docs/performance.md) for measurements, boundaries, and remaining questions.
 
----
+## On the bench
 
-## Setup
+| Layer | Current implementation |
+| :--- | :--- |
+| Computer | Raspberry Pi 5, 8 GB, active cooling |
+| Operating environment | Debian 13, 64-bit ARM; Python 3.13; headless over SSH |
+| Audio | USB microphone/audio interface and speaker; PortAudio capture and ALSA playback |
+| Wake word | openWakeWord 0.4.0, “Hey Jarvis” ONNX model |
+| Transcription | faster-whisper `base`, CPU, INT8 |
+| Response generation | `claude-sonnet-4-6`, Anthropic SDK 0.111.0 |
+| Speech synthesis | Piper 1.8.0, `en_US-ryan-medium`, loaded once |
+
+## Run the text interface
+
+The text interface lets you explore the personality system without audio hardware. You need Python and an Anthropic API key with API access.
 
 ```bash
 git clone https://github.com/lucaformento/TARS.git
 cd TARS
-
 python3 -m venv venv
 source venv/bin/activate
-
-pip install anthropic python-dotenv
+python -m pip install "anthropic==0.111.0" python-dotenv
 ```
 
 Create a `.env` file in the project root:
 
-```
+```dotenv
 ANTHROPIC_API_KEY=your_key_here
 ```
 
-Run:
+Then run:
 
 ```bash
 python tars.py
 ```
 
-Credentials are loaded from `.env` at runtime and excluded from version control via `.gitignore`.
+Type `quit` to exit. `.env` is excluded from version control. The current character prompt addresses its builder, Luca; customize it in `personality.py` for your own build.
+
+**For the microphone and speaker:** follow the [voice setup notes](docs/voice-setup.md). Model files and audio configuration are provisioned separately; a fresh clone is not yet a one-command hardware setup.
+
+## Next on the bench
+
+- [x] Shared brain with text and voice interfaces
+- [x] Personality dials and session history
+- [x] Wake word and follow-up conversation loop
+- [x] Resident Piper voice and sentence streaming
+- [x] Timing instrumentation and paired synthesis benchmark
+- [ ] Measure first-transcription overhead and compare STT options
+- [ ] Smooth sentence transitions and tune vocal delivery
+- [ ] Improve spoken-command parsing and failure recovery
+- [ ] Package repeatable voice setup and add a demo recording
+- [ ] Add a custom “Hey TARS” wake word and startup service
+- [ ] Build the articulated body, servo control, and sensors
+
+The prototype currently waits until playback finishes before listening again. Background noise can interfere with speech detection, and history resets when the process stops. Those constraints guide the next round of work.
 
 ---
 
-## Roadmap
-
-**Phase 1 — Brain** *(complete)*
-Headless Pi provisioning, Python environment, Anthropic API integration, configurable personality system, conversation loop with session memory.
-
-**Phase 2 — Voice**
-Speech-to-text input, text-to-speech output, wake-word detection.
-
-**Phase 3 — Body**
-CAD design and 3D printing of the articulated chassis, servo control via PCA9685, structural assembly.
-
-**Phase 4 — Integration**
-Untethered operation on battery power, onboard camera, obstacle sensors, persistent cross-session memory.
-
----
-
-## Notes
-
-This is an active build, developed and documented incrementally. The commit history reflects the actual progression of the project.
+Built by [Luca Formento](https://github.com/lucaformento). An independent project inspired by *Interstellar*.
