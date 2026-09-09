@@ -20,17 +20,25 @@ class TARS:
         self.conversation = []              # dies with the process (for now)
 
     def respond(self, user_input):
-        """Commands mutate state and ride the system prompt (control plane).
-        The conversation only ever holds what Luca actually said (data plane)."""
+        """Collect streamed text for front-ends that need a complete reply."""
+        return "".join(self.respond_stream(user_input))
+
+    def respond_stream(self, user_input):
+        """Yield text deltas; retain text delivered to the caller if interrupted."""
         note = apply_command(user_input, self.settings)
         self.conversation.append({"role": "user", "content": user_input})
-
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=build_personality(self.settings, note, self.voice),
-            messages=self.conversation,
-        )
-        reply = response.content[0].text
-        self.conversation.append({"role": "assistant", "content": reply})
-        return reply
+        parts = []
+        try:
+            with self.client.messages.stream(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=build_personality(self.settings, note, self.voice),
+                messages=self.conversation,
+            ) as stream:
+                for text in stream.text_stream:
+                    if text:
+                        parts.append(text)
+                        yield text
+        finally:
+            if parts:
+                self.conversation.append({"role": "assistant", "content": "".join(parts)})
