@@ -1,46 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
-  <title id="title">TARS</title>
-  <desc id="desc">A conversational robot in progress. An abstract four-panel robot silhouette beside the project name. Voice online; body planned.</desc>
-  <defs>
-    <linearGradient id="bg" x2="1" y2="1">
-      <stop stop-color="#171d24"/>
-      <stop offset="1" stop-color="#0c1015"/>
-    </linearGradient>
-    <linearGradient id="metal" x2="1" y2="0">
-      <stop stop-color="#414b56"/>
-      <stop offset="0.45" stop-color="#717c85"/>
-      <stop offset="1" stop-color="#2a323c"/>
-    </linearGradient>
-    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-      <path d="M40 0H0V40" fill="none" stroke="#aab8c8" stroke-opacity="0.035"/>
-    </pattern>
-  </defs>
-  <rect width="1280" height="360" rx="16" fill="url(#bg)"/>
-  <rect width="1280" height="360" rx="16" fill="url(#grid)"/>
-  <path d="M56 48h34M56 48v20M1224 312h-34M1224 312v-20" fill="none" stroke="#c79259" stroke-width="2"/>
-  <g font-family="Arial, Helvetica, sans-serif">
-    <text x="82" y="91" fill="#c79259" font-size="15" font-weight="700" letter-spacing="4">THE BUILD LOG</text>
-    <text x="76" y="205" fill="#f1ede5" font-size="118" font-weight="800" letter-spacing="12">TARS</text>
-    <text x="82" y="251" fill="#a9b3bd" font-size="25">A conversational robot in progress.</text>
-    <circle cx="87" cy="302" r="4" fill="#9abb9d"/>
-    <text x="102" y="308" fill="#ccd6cf" font-size="14" font-weight="700" letter-spacing="2">VOICE ONLINE</text>
-    <path d="M257 292v19" stroke="#414b56"/>
-    <text x="279" y="308" fill="#929da8" font-size="14" letter-spacing="2">BODY PLANNED</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-labelledby="title desc">
+  <title id="title">TARS — Built to help he who wants to explore and conquer.</title>
+  <desc id="desc">A black and gold banner with a geometric TARS wordmark and a detailed four-panel robot silhouette.</desc>
+  <rect width="1280" height="440" rx="12" fill="#080909"/>
+  <path d="M36 20H1244L1260 36V404L1244 420H36L20 404V36Z" fill="none" stroke="#302a20"/>
+  <!-- Geometric lettering drawn as paths for consistent rendering. -->
+  <g fill="#dbb66e" transform="translate(82 102)">
+    <path d="M0 0H114V18H67V126H47V18H0Z"/>
+    <path d="M146 126L192 0H215L261 126H239L227 91H179L167 126ZM185 73H221L203 21Z" fill-rule="evenodd"/>
+    <path d="M294 126V0H357C385 0 401 15 401 39C401 58 391 71 373 77L407 126H382L351 80H314V126ZM314 18V62H355C372 62 381 54 381 40C381 25 372 18 355 18Z" fill-rule="evenodd"/>
+    <path d="M534 5V25C522 19 507 16 492 16C470 16 459 22 459 34C459 45 469 49 492 54L509 58C535 64 547 75 547 94C547 117 526 130 493 130C473 130 453 126 439 118V97C455 107 474 112 493 112C515 112 527 106 527 94C527 83 517 78 495 73L479 69C452 63 439 52 439 34C439 11 460 -3 493 -3C508 -3 523 0 534 5Z"/>
   </g>
-  <g transform="translate(888 60)">
-    <ellipse cx="115" cy="252" rx="155" ry="9" fill="#06090c" opacity="0.65"/>
-    <g fill="url(#metal)" stroke="#87949f" stroke-opacity="0.45">
-      <rect x="0" y="9" width="51" height="227" rx="2"/>
-      <rect x="59" y="0" width="51" height="245" rx="2"/>
-      <rect x="118" y="0" width="51" height="245" rx="2"/>
-      <rect x="177" y="9" width="51" height="227" rx="2"/>
+  <path d="M83 258H143" stroke="#dbb66e" stroke-width="2"/>
+  <text x="82" y="307" fill="#d7c49f" font-family="Arial, Helvetica, sans-serif" font-size="30" letter-spacing="0.3">
+    <tspan x="82" dy="0">Built to help he who wants</tspan>
+    <tspan x="82" dy="41">to explore and conquer.</tspan>
+  </text>
+  <!-- Four articulated columns with restrained edges, panel seams, and dual displays. -->
+  <g transform="translate(887 68)" stroke-linejoin="round">
+    <path d="M8 288H230" stroke="#342a1c"/>
+    <g fill="#201c14" stroke="#8c7143" stroke-width="1.2">
+      <path d="M47 19L56 13V268L47 277Z"/><path d="M106 4L115 0V281L106 286Z"/>
+      <path d="M165 4L174 0V281L165 286Z"/><path d="M224 19L233 13V268L224 277Z"/>
     </g>
-    <g stroke="#171e26" stroke-width="3">
-      <path d="M2 104h47M61 104h47M120 104h47M179 104h47"/>
-      <path d="M2 174h47M61 174h47M120 174h47M179 174h47"/>
+    <g fill="#11120f" stroke="#c39d59" stroke-width="1.6">
+      <path d="M0 23L5 19H47V277H0Z"/><path d="M59 8L64 4H106V286H59Z"/>
+      <path d="M118 8L123 4H165V286H118Z"/><path d="M177 23L182 19H224V277H177Z"/>
     </g>
-    <rect x="67" y="30" width="94" height="41" rx="2" fill="#131b23" stroke="#91a0aa" stroke-opacity="0.4"/>
-    <path d="M77 42h48M77 49h71M77 56h33" stroke="#7caaa9" stroke-width="2" opacity="0.85"/>
-    <path d="M14 22v66M73 117v43M132 187v43M191 22v66" stroke="#b4bec6" stroke-opacity="0.3"/>
+    <g fill="none" stroke="#5d4b2e" stroke-width="1">
+      <path d="M5 19L14 13H56M64 4L73 0H115M123 4L132 0H174M182 19L191 13H233"/>
+      <path d="M7 29H39V104H7ZM184 29H216V104H184Z"/>
+      <path d="M7 124H39V187H7ZM66 124H98V195H66ZM125 124H157V195H125ZM184 124H216V187H184Z"/>
+      <path d="M7 207H39V267H7ZM66 215H98V276H66ZM125 215H157V276H125ZM184 207H216V267H184Z"/>
+    </g>
+    <g fill="#080909" stroke="#9b7b45" stroke-width="1">
+      <path d="M0 113H47V119H0ZM59 113H106V119H59ZM118 113H165V119H118ZM177 113H224V119H177Z"/>
+      <path d="M0 196H47V202H0ZM59 204H106V210H59ZM118 204H165V210H118ZM177 196H224V202H177Z"/>
+    </g>
+    <g fill="#080909" stroke="#a7884e" stroke-width="1.2">
+      <rect x="65" y="33" width="35" height="50" rx="1"/><rect x="124" y="33" width="35" height="50" rx="1"/>
+    </g>
+    <g fill="none" stroke="#d6b573" stroke-width="1" opacity="0.85">
+      <path d="M70 43H87M70 48H94M70 56H81M70 70H76L79 63L83 72L87 65H95"/>
+      <path d="M129 43H152M129 48H142M129 57H136M141 57H152M129 66H152M129 72H146"/>
+    </g>
+    <g fill="#b49154"><circle cx="70" cy="91" r="1.5"/><circle cx="129" cy="91" r="1.5"/></g>
+    <g stroke="#735b35" stroke-width="1">
+      <path d="M16 44V86M207 44V86M74 134V182M149 134V182"/>
+      <path d="M15 255H31M74 264H90M133 264H149M192 255H208"/>
+    </g>
   </g>
 </svg>

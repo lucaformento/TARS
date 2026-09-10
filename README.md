@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/tars-banner.svg" alt="TARS — a conversational robot in progress. Voice online; body planned." width="100%">
+  <img src="docs/assets/tars-banner.svg" alt="TARS — Built to help he who wants to explore and conquer." width="100%">
 </p>
 
 <p align="center">
