@@ -31,6 +31,29 @@ but rare close-phrase examples still overlapped with valid target examples.
 Raising the threshold enough to reject those outliers caused too many missed
 wakes.
 
+### v2.2 diagnostic audit
+
+The rejected v2.2 checkpoint reaches 73.0% development target recall when its
+raw scores are evaluated directly at threshold 0.5. That is a modest increase
+over the first candidate's 69.3% synthetic figure, but it does not satisfy the
+phrase gates: at the same threshold, several negative groups report positive
+fractions between 2% and 8%, including `hey stars`, `hey cars`, `cars`, and
+`guitars`.
+
+The strict v2.2 threshold was selected from background and per-phrase negative
+scores. It happened to fall near the median target score because the target and
+negative distributions overlap near 1.0; the target median itself does not set
+the threshold. Consequently, the roughly 53% strict-safe recall remains useful
+evidence that the configured gates cannot be met by that checkpoint.
+
+The three saved background scores above 0.5 were isolated single-window peaks.
+[`openWakeWord` 0.4.0 supports a `patience` option](https://github.com/dscripka/openWakeWord/blob/v0.4.0/openwakeword/model.py#L142-L158)
+that can require consecutive positive windows, but its own API notes that this
+may lower true-positive rate.
+The diagnostics retain only per-clip target and phrase-negative peaks, so they
+cannot establish two-window recall or phrase rejection. A persistence rule is
+therefore an optional Pi experiment, not a validated 73% deployment result.
+
 ## Runtime policy
 
 The application keeps the original candidate at threshold 0.5 because it has
@@ -47,7 +70,14 @@ histories, so its effect on valid wakes is unknown.
 
 The candidate model SHA-256 is
 `4d7e339df7096a38b279b5322f27c51de815fd20d3dc00f9e5a689794aa03bed`.
-Model and feature files are provisioned locally and excluded from Git.
+Its deployed feature models match the files used by training:
+
+- mel-spectrogram: `ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f`
+- embedding: `70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f`
+
+The application passes both paths explicitly instead of relying on the
+openWakeWord package defaults. Model and feature files are provisioned locally
+and excluded from Git.
 
 Revisit training only if false or missed wakes materially interfere with normal
 use. Future evaluation should use continuous real-room audio rather than another
