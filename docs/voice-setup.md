@@ -34,7 +34,7 @@ TARS/
     └── embedding_model.onnx
 ```
 
-- **Piper:** the working Pi uses the community TARS ONNX model and matching JSON configuration in `voices/tars-community/`. The model exposes multiple speakers; `tars_voice.py` explicitly selects its `neutral` speaker. These downloaded files are excluded from Git.
+- **Piper:** the working Pi uses the community TARS ONNX model and matching JSON configuration in `voices/tars-community/`. The model exposes multiple speakers; `tars_voice.py` explicitly selects its `neutral` speaker. These downloaded files are excluded from Git. The reviewed package does not include a model card or documented training provenance, so this remains a prototype voice. Verify its source and reuse terms, or replace it with a documented voice, before distributing the model or presenting the voice as a portfolio asset.
 - **Wake word:** provision the project's custom `hey_tars.onnx` candidate and its matching `melspectrogram.onnx` and `embedding_model.onnx` files. The files are excluded from Git. The custom detector's measured tradeoffs and accepted limitations are recorded in the [wake-word decision](wake-word.md).
 - **Transcription:** the code selects faster-whisper's `base` model with `device="cpu"` and `compute_type="int8"`. Loading a named model downloads it on first use if it is not cached. See the [upstream model-loading documentation](https://github.com/SYSTRAN/faster-whisper#model-conversion).
 

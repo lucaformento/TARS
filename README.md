@@ -96,7 +96,7 @@ These are median **WAV-generation times**, with four measured trials per input a
 
 In the first live streaming session, the estimated interval from detected speech end to the first playback request was **4.54–9.52 seconds across four turns**. Two turns were below five seconds; transcription and response-stream delays still caused longer waits. The metric excludes playback startup and is not a measurement of the first audible sound.
 
-See the [performance notes](docs/performance.md) and [wake-word decision](docs/wake-word.md) for measurements, boundaries, and remaining questions.
+See the [current project state](docs/project-state.md), [performance notes](docs/performance.md), and [wake-word decision](docs/wake-word.md) for settled decisions, measurements, boundaries, and remaining questions.
 
 ## On the bench
 
