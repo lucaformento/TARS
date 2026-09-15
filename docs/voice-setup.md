@@ -25,15 +25,16 @@ The repository excludes downloaded voice and wake-word models. Provision this la
 ```text
 TARS/
 ├── voices/
-│   ├── en_US-ryan-medium.onnx
-│   └── en_US-ryan-medium.onnx.json
+│   └── tars-community/
+│       ├── TARS.onnx
+│       └── TARS.onnx.json
 └── wakeword/
     ├── hey_tars.onnx
     ├── melspectrogram.onnx
     └── embedding_model.onnx
 ```
 
-- **Piper:** obtain the ONNX model and its matching JSON configuration from the [Ryan medium voice directory](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/ryan/medium).
+- **Piper:** the working Pi uses the community TARS ONNX model and matching JSON configuration in `voices/tars-community/`. The model exposes multiple speakers; `tars_voice.py` explicitly selects its `neutral` speaker. These downloaded files are excluded from Git.
 - **Wake word:** provision the project's custom `hey_tars.onnx` candidate and its matching `melspectrogram.onnx` and `embedding_model.onnx` files. The files are excluded from Git. The custom detector's measured tradeoffs and accepted limitations are recorded in the [wake-word decision](wake-word.md).
 - **Transcription:** the code selects faster-whisper's `base` model with `device="cpu"` and `compute_type="int8"`. Loading a named model downloads it on first use if it is not cached. See the [upstream model-loading documentation](https://github.com/SYSTRAN/faster-whisper#model-conversion).
 
@@ -51,6 +52,8 @@ Edit these constants near the top of [`tars_voice.py`](../tars_voice.py):
 | `MIC_NAME` | A distinctive substring of your input device's PortAudio name |
 
 The committed paths currently point to `/home/lucadev/TARS/`, and `MIC_NAME` is `USB PnP`. Playback uses ALSA's `default` output device. Confirm that the microphone can capture audio and that `aplay` can play through that output.
+
+Before synthesis, the voice interface applies a speech-only phoneme override for the builder's name. It changes how Piper pronounces “Luca” without changing the response text stored in conversation history.
 
 ## Start a conversation
 

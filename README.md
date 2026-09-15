@@ -108,7 +108,7 @@ See the [performance notes](docs/performance.md) and [wake-word decision](docs/w
 | Wake word | openWakeWord 0.4.0, custom “Hey TARS” ONNX model with voice-activity gating |
 | Transcription | faster-whisper `base`, CPU, INT8 |
 | Response generation | `claude-sonnet-4-6`, Anthropic SDK 0.111.0 |
-| Speech synthesis | Piper 1.8.0, `en_US-ryan-medium`, loaded once |
+| Speech synthesis | Piper 1.8.0, community TARS voice using its neutral speaker, loaded once |
 
 ## Run the text interface
 

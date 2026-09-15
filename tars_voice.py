@@ -16,14 +16,15 @@ import sounddevice as sd
 import openwakeword
 from faster_whisper import WhisperModel
 from piper.voice import PiperVoice
+from piper.config import SynthesisConfig
 
 from brain import TARS
 
 WAKE_MODEL = "/home/lucadev/TARS/wakeword/hey_tars.onnx"
 MELSPEC_MODEL = "/home/lucadev/TARS/wakeword/melspectrogram.onnx"
 EMBEDDING_MODEL = "/home/lucadev/TARS/wakeword/embedding_model.onnx"
-VOICE = "/home/lucadev/TARS/voices/en_US-ryan-medium.onnx"
-VOICE_CONFIG = "/home/lucadev/TARS/voices/en_US-ryan-medium.onnx.json"
+VOICE = "/home/lucadev/TARS/voices/tars-community/TARS.onnx"
+VOICE_CONFIG = "/home/lucadev/TARS/voices/tars-community/TARS.onnx.json"
 MIC_NAME = "USB PnP"
 
 STT_MODEL = "base"        # swap to "tiny.en" for ~3x speed, some accuracy loss
@@ -127,13 +128,21 @@ def speak(voice, text):
     The request timestamp precedes launching aplay; it is not acoustic onset.
     """
     text = sanitize(text)
+    # Keep the written name unchanged while guiding the selected voice's pronunciation.
+    text = re.sub(r"(?i)\bluca\b", "[[l\u02c8u\u02d0ka]]", text)
     if not text:
         return 0.0, 0.0, None
     with tempfile.TemporaryDirectory(prefix="tars-speech-") as folder:
         output = f"{folder}/reply.wav"
         t0 = time.perf_counter()
         with wave.open(output, "wb") as wav:
-            voice.synthesize_wav(text, wav)
+            voice.synthesize_wav(
+                text,
+                wav,
+                syn_config=SynthesisConfig(
+                    speaker_id=voice.config.speaker_id_map.get("neutral")
+                ),
+            )
         playback_requested_at = time.perf_counter()
         subprocess.run(["aplay", "-q", "-D", "default", output], check=True)
         playback_finished_at = time.perf_counter()
