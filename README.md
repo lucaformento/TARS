@@ -22,7 +22,7 @@ I'm building a conversational robot inspired by TARS from *Interstellar*, starti
 
 ## What works today
 
-- **Wake once, keep talking.** Say “Hey Jarvis,” then ask follow-up questions without repeating the wake word. After eight seconds without speech, TARS returns to listening for it.
+- **Wake once, keep talking.** Say “Hey TARS,” then ask follow-up questions without repeating the wake word. After eight seconds without speech, TARS returns to listening for it.
 - **Speak as sentences arrive.** The voice interface starts synthesizing complete sentences from the response stream before collecting the entire reply.
 - **Keep the voice loaded.** Piper initializes once at startup and is reused throughout the session.
 - **Change his personality live.** Four application-owned dials shape the next response, with presets and conversational acknowledgments.
@@ -96,7 +96,7 @@ These are median **WAV-generation times**, with four measured trials per input a
 
 In the first live streaming session, the estimated interval from detected speech end to the first playback request was **4.54–9.52 seconds across four turns**. Two turns were below five seconds; transcription and response-stream delays still caused longer waits. The metric excludes playback startup and is not a measurement of the first audible sound.
 
-See the [performance notes](docs/performance.md) for measurements, boundaries, and remaining questions.
+See the [performance notes](docs/performance.md) and [wake-word decision](docs/wake-word.md) for measurements, boundaries, and remaining questions.
 
 ## On the bench
 
@@ -105,7 +105,7 @@ See the [performance notes](docs/performance.md) for measurements, boundaries, a
 | Computer | Raspberry Pi 5, 8 GB, active cooling |
 | Operating environment | Debian 13, 64-bit ARM; Python 3.13; headless over SSH |
 | Audio | USB microphone/audio interface and speaker; PortAudio capture and ALSA playback |
-| Wake word | openWakeWord 0.4.0, “Hey Jarvis” ONNX model |
+| Wake word | openWakeWord 0.4.0, custom “Hey TARS” ONNX model with voice-activity gating |
 | Transcription | faster-whisper `base`, CPU, INT8 |
 | Response generation | `claude-sonnet-4-6`, Anthropic SDK 0.111.0 |
 | Speech synthesis | Piper 1.8.0, `en_US-ryan-medium`, loaded once |
@@ -149,10 +149,11 @@ Type `quit` to exit. `.env` is excluded from version control. The current charac
 - [ ] Smooth sentence transitions and tune vocal delivery
 - [ ] Improve spoken-command parsing and failure recovery
 - [ ] Package repeatable voice setup and add a demo recording
-- [ ] Add a custom “Hey TARS” wake word and startup service
+- [x] Add a custom “Hey TARS” wake word
+- [ ] Package a repeatable startup service
 - [ ] Build the articulated body, servo control, and sensors
 
-The prototype currently waits until playback finishes before listening again. Background noise can interfere with speech detection, and history resets when the process stops. Those constraints guide the next round of work.
+The prototype currently waits until playback finishes before listening again. The custom wake word can occasionally respond to near phrases such as “hey stars” or “hey cars”; that tradeoff is documented and accepted for the current build. Background noise can interfere with speech detection, and history resets when the process stops. Those constraints guide the next round of work.
 
 ---
 

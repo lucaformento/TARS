@@ -19,7 +19,9 @@ from piper.voice import PiperVoice
 
 from brain import TARS
 
-WAKE_MODEL = "/home/lucadev/TARS/wakeword/hey_jarvis_v0.1.onnx"
+WAKE_MODEL = "/home/lucadev/TARS/wakeword/hey_tars.onnx"
+MELSPEC_MODEL = "/home/lucadev/TARS/wakeword/melspectrogram.onnx"
+EMBEDDING_MODEL = "/home/lucadev/TARS/wakeword/embedding_model.onnx"
 VOICE = "/home/lucadev/TARS/voices/en_US-ryan-medium.onnx"
 VOICE_CONFIG = "/home/lucadev/TARS/voices/en_US-ryan-medium.onnx.json"
 MIC_NAME = "USB PnP"
@@ -29,6 +31,8 @@ STT_MODEL = "base"        # swap to "tiny.en" for ~3x speed, some accuracy loss
 SR = 16000
 FRAME = 1280              # 80ms, the size openWakeWord expects
 WAKE_THRESHOLD = 0.5
+WAKE_VAD_THRESHOLD = 0.5  # suppress scores when the VAD does not detect speech
+WAKE_COOLDOWN = 2.0       # ignore a stale/duplicate trigger after going to sleep
 SILENCE_END = 0.7         # quiet needed to call your sentence finished
 MAX_UTTERANCE = 15.0      # hard cap so a noisy room can't record forever
 MIN_SPEECH = 0.4          # shorter than this is a cough, not a sentence
@@ -235,7 +239,12 @@ def print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at):
 dev = next(i for i, d in enumerate(sd.query_devices())
            if MIC_NAME in d["name"] and d["max_input_channels"] > 0)
 
-oww = openwakeword.Model(wakeword_model_paths=[WAKE_MODEL])
+oww = openwakeword.Model(
+    wakeword_model_paths=[WAKE_MODEL],
+    melspec_onnx_model_path=MELSPEC_MODEL,
+    embedding_onnx_model_path=EMBEDDING_MODEL,
+    vad_threshold=WAKE_VAD_THRESHOLD,
+)
 stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
 piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
 tars = TARS(voice=True)          # short, speech-shaped replies
@@ -246,12 +255,14 @@ with sd.InputStream(device=dev, samplerate=SR, channels=1,
     print("Calibrating room noise, stay quiet...")
     threshold = calibrate(stream)
     print(f"Threshold: {threshold:.0f}  |  STT: {STT_MODEL}")
-    print("Say 'hey jarvis' to start. Ctrl+C to stop.\n")
+    print("Say 'hey tars' to start. Ctrl+C to stop.\n")
 
+    wake_ready_at = 0.0
     while True:
         # --- asleep: nothing but wake-word detection ---
         audio, _ = stream.read(FRAME)
-        if max(oww.predict(audio.flatten()).values()) <= WAKE_THRESHOLD:
+        wake_score = max(oww.predict(audio.flatten()).values())
+        if time.monotonic() < wake_ready_at or wake_score <= WAKE_THRESHOLD:
             continue
 
         print("[wake]")
@@ -265,6 +276,7 @@ with sd.InputStream(device=dev, samplerate=SR, channels=1,
             clip, last_loud_read_at = record_utterance(stream, threshold, wait)
             if clip is None:
                 print("[sleep]\n")
+                wake_ready_at = time.monotonic() + WAKE_COOLDOWN
                 break
 
             clip_s = len(clip) / SR

@@ -28,11 +28,13 @@ TARS/
 │   ├── en_US-ryan-medium.onnx
 │   └── en_US-ryan-medium.onnx.json
 └── wakeword/
-    └── hey_jarvis_v0.1.onnx
+    ├── hey_tars.onnx
+    ├── melspectrogram.onnx
+    └── embedding_model.onnx
 ```
 
 - **Piper:** obtain the ONNX model and its matching JSON configuration from the [Ryan medium voice directory](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/ryan/medium).
-- **Wake word:** use the “Hey Jarvis” ONNX model from the [openWakeWord 0.4.0 resources](https://github.com/dscripka/openWakeWord/tree/v0.4.0/openwakeword/resources/models). Its supporting feature models must also be available to the installed package.
+- **Wake word:** provision the project's custom `hey_tars.onnx` candidate and its matching `melspectrogram.onnx` and `embedding_model.onnx` files. The files are excluded from Git. The custom detector's measured tradeoffs and accepted limitations are recorded in the [wake-word decision](wake-word.md).
 - **Transcription:** the code selects faster-whisper's `base` model with `device="cpu"` and `compute_type="int8"`. Loading a named model downloads it on first use if it is not cached. See the [upstream model-loading documentation](https://github.com/SYSTRAN/faster-whisper#model-conversion).
 
 ## Match the configuration to your hardware
@@ -42,6 +44,8 @@ Edit these constants near the top of [`tars_voice.py`](../tars_voice.py):
 | Constant | What to set |
 | :--- | :--- |
 | `WAKE_MODEL` | Absolute path to the wake-word ONNX file |
+| `MELSPEC_MODEL` | Absolute path to the matching mel-spectrogram ONNX file |
+| `EMBEDDING_MODEL` | Absolute path to the matching embedding ONNX file |
 | `VOICE` | Absolute path to the Piper ONNX file |
 | `VOICE_CONFIG` | Absolute path to the matching Piper JSON file |
 | `MIC_NAME` | A distinctive substring of your input device's PortAudio name |
@@ -57,7 +61,7 @@ python tars_voice.py
 ```
 
 1. Stay quiet during room-noise calibration.
-2. Say **“Hey Jarvis.”** Wait for the terminal's `[wake]` indication, then ask a question.
+2. Say **“Hey TARS.”** Wait for the terminal's `[wake]` indication, then ask a question.
 3. Let TARS finish speaking. Ask a follow-up within eight seconds to continue without another wake word.
 4. After `[sleep]`, use the wake word again. Press **Ctrl+C** to stop the program.
 
