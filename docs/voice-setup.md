@@ -2,6 +2,10 @@
 
 The voice prototype runs on the builder's Raspberry Pi 5 with Debian 13, Python 3.13, a USB microphone/audio interface, and a speaker. The text interface is the simplest entry point; voice setup currently requires manual model provisioning and device configuration.
 
+Piper is the installed default. An opt-in ElevenLabs replacement and short name
+audition are now available; see [cloud voice setup](cloud-voice.md). That engine
+is pending audible selection and Pi validation.
+
 ## Runtime dependencies
 
 Start with the virtual environment and API key from the [README](../README.md#run-the-text-interface).
@@ -53,11 +57,14 @@ Edit these constants near the top of [`tars_voice.py`](../tars_voice.py):
 
 The committed paths currently point to `/home/lucadev/TARS/`, and `MIC_NAME` is `USB PnP`. Playback uses ALSA's `default` output device. Confirm that the microphone can capture audio and that `aplay` can play through that output.
 
-Before synthesis, the voice interface applies the Italian pronunciation
+Before Piper synthesis, the voice interface applies the Italian pronunciation
 `ˈluːka` (“LOO-kah”) to the builder's name. This speech-only override does not
 change the response text stored in conversation history. Audition it without
 starting the microphone loop by running
 `python tars_voice.py --test-name`.
+Luca reports that it still sounds poor. The earlier stress-marker edit was an
+attempt, not a verified pronunciation fix. Cloud speech starts with ordinary
+spelling and offers a separate optional alias.
 
 ## Start a conversation
 
@@ -76,4 +83,6 @@ run `python tars_voice.py --diagnostics`.
 3. Let TARS finish speaking. Ask a follow-up within eight seconds to continue without another wake word.
 4. After `[sleep]`, use the wake word again. Press **Ctrl+C** to stop the program.
 
-`[sleep]` leaves the process and its conversation history running. A `KeyboardInterrupt` traceback after Ctrl+C is currently expected. Background noise can delay endpointing; the audio loop does not yet support interrupting TARS while he speaks.
+`[sleep]` leaves the process and its conversation history running. Ctrl+C exits
+cleanly. Background noise can delay endpointing; the audio loop does not yet
+support interrupting TARS while he speaks.

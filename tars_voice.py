@@ -4,6 +4,7 @@ Wake word starts a conversation; after that he keeps listening until you
 go quiet for a while, so follow-ups need no wake word.
 """
 
+import argparse
 import re
 import subprocess
 import sys
@@ -11,16 +12,11 @@ import tempfile
 import time
 import wave
 import warnings
-from contextlib import closing
+from contextlib import closing, ExitStack
 
 import numpy as np
 import sounddevice as sd
-import openwakeword
-from faster_whisper import WhisperModel
-from piper.voice import PiperVoice
-from piper.config import SynthesisConfig
-
-from brain import TARS
+from cloud_speech import CloudSpeechError, ElevenLabsVoice, MODELS, NAME_TEST, load_environment
 
 WAKE_MODEL = "/home/lucadev/TARS/wakeword/hey_tars.onnx"
 MELSPEC_MODEL = "/home/lucadev/TARS/wakeword/melspectrogram.onnx"
@@ -42,8 +38,6 @@ MIN_SPEECH = 0.4          # shorter than this is a cough, not a sentence
 TRIM_PAD = 2              # frames of padding kept around speech (160ms)
 FIRST_WAIT = 6.0          # after the wake word, how long to wait for you
 FOLLOWUP_WAIT = 8.0       # after he answers, how long before he sleeps
-TIMING = "--diagnostics" in sys.argv[1:]  # opt-in per-stage latency
-TEST_NAME = "--test-name" in sys.argv[1:]
 LUCA_PRONUNCIATION = "[[\u02c8lu\u02d0ka]]"  # Italian: LOO-kah, stress first
 
 EMOJI = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF"
@@ -52,7 +46,7 @@ MARKDOWN = re.compile(r"[*_`#>~\[\]]")
 
 
 def sanitize(text):
-    """Strip anything Piper would read aloud as punctuation. Backstop only —
+    """Strip formatting the speech engine would read aloud. Backstop only —
     the real fix is the voice style block in the system prompt."""
     text = EMOJI.sub("", text)
     text = MARKDOWN.sub("", text)
@@ -128,10 +122,15 @@ def record_utterance(stream, threshold, wait):
 
 
 def speak(voice, text):
-    """Return synthesis time, playback-call time, and playback-request timestamp.
-    The request timestamp precedes launching aplay; it is not acoustic onset.
+    """Return preparation time, playback-phase time, and request timestamp.
+    Cloud preparation ends at the first PCM write; later transfer overlaps play.
+    The request timestamp is not acoustic onset for either engine.
     """
     text = sanitize(text)
+    if isinstance(voice, ElevenLabsVoice):
+        return voice.speak(text)
+    from piper.config import SynthesisConfig
+
     # Keep the written name unchanged while guiding the selected voice's pronunciation.
     text = re.sub(r"(?i)\bluca\b", LUCA_PRONUNCIATION, text)
     if not text:
@@ -182,9 +181,12 @@ def split_sentences(buffer, final=False):
 
 def speak_stream(tars, voice, user_input):
     """Read and speak sequentially. Cycle time includes synthesis and playback."""
+    if isinstance(voice, ElevenLabsVoice):
+        voice.begin_response()
     started = time.perf_counter()
     metrics = {"first_text": None, "first_chunk": None, "first_play_request": None,
-               "tts": 0.0, "playback": 0.0, "chunks": 0, "gaps": []}
+               "tts": 0.0, "playback": 0.0, "chunks": 0, "gaps": [],
+               "cloud": isinstance(voice, ElevenLabsVoice), "output_underflows": 0}
     previous_play_end = None
 
     def emit(chunk):
@@ -204,6 +206,8 @@ def speak_stream(tars, voice, user_input):
         metrics["tts"] += synth_s
         metrics["playback"] += play_s
         metrics["chunks"] += 1
+        if metrics["cloud"]:
+            metrics["output_underflows"] += voice.last_underflows
 
     buffer = ""
     print("  TARS: ", end="", flush=True)
@@ -233,8 +237,13 @@ def print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at):
     def seconds(value):
         return "n/a" if value is None else f"{value:.2f}s"
 
+    preparation = "wait before playback" if metrics["cloud"] else "tts total"
+    playback = "stream/playback phase" if metrics["cloud"] else "playback calls"
     print(f"  [clip {clip_s:.1f}s] stt {stt_s:.1f}s | chunks {metrics['chunks']} | "
-          f"tts total {metrics['tts']:.2f}s | playback calls {metrics['playback']:.1f}s")
+          f"{preparation} {metrics['tts']:.2f}s | {playback} {metrics['playback']:.1f}s")
+    if metrics["cloud"]:
+        print("  Cloud stream/playback includes overlapping download and generation; "
+              f"output underflows: {metrics['output_underflows']}")
     print(f"  Request -> first text: {seconds(metrics['first_text'])} | "
           f"first speech chunk: {seconds(metrics['first_chunk'])}")
     requested = metrics["first_play_request"]
@@ -250,17 +259,42 @@ def print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Talk with TARS.")
+    parser.add_argument("--tts", choices=("piper", "elevenlabs"), default="piper",
+                        help="Speech engine; ElevenLabs requires account configuration.")
+    parser.add_argument("--diagnostics", action="store_true")
+    parser.add_argument("--test-name", action="store_true",
+                        help="Speak a short name test, then exit without starting the microphone.")
+    parser.add_argument("--elevenlabs-model", choices=MODELS)
+    parser.add_argument("--name-alias", help='ElevenLabs speech-only name spelling, e.g. "Loo kah".')
+    args = parser.parse_args()
+    if args.tts != "elevenlabs" and (args.elevenlabs_model or args.name_alias is not None):
+        parser.error("--elevenlabs-model and --name-alias require --tts elevenlabs")
+    with ExitStack() as cleanup:
+        if args.tts == "elevenlabs":
+            load_environment()
+            voice = ElevenLabsVoice(model_id=args.elevenlabs_model, name_alias=args.name_alias)
+            cleanup.callback(voice.close)
+        else:
+            from piper.voice import PiperVoice
+            voice = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
+        if args.test_name:
+            print("Name audition: listen for LOO-kah.")
+            speak(voice, NAME_TEST)
+            return
+        run_conversation(voice, args.diagnostics)
+
+
+def run_conversation(voice, diagnostics=False):
+    import openwakeword
+    from faster_whisper import WhisperModel
+    from brain import TARS
+
     warnings.filterwarnings(
         "ignore",
         message="Specified provider 'CUDAExecutionProvider' is not in available provider names.*",
         module="onnxruntime.*",
     )
-
-    piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
-    if TEST_NAME:
-        print("Testing the Italian pronunciation: LOO-kah.")
-        speak(piper, "Luca. I'm listening, Luca.")
-        return
 
     dev = next(i for i, d in enumerate(sd.query_devices())
                if MIC_NAME in d["name"] and d["max_input_channels"] > 0)
@@ -317,9 +351,19 @@ def main():
 
                 print(f"  Luca: {heard}")
 
-                metrics = speak_stream(tars, piper, heard)
-                if TIMING:
-                    print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at)
+                try:
+                    metrics = speak_stream(tars, voice, heard)
+                except CloudSpeechError as exc:
+                    print(f"[speech unavailable] {exc}")
+                    print("[sleep]\n")
+                    flush(stream)
+                    if hasattr(oww, "reset"):
+                        oww.reset()
+                    wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                    break
+                else:
+                    if diagnostics:
+                        print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at)
 
                 flush(stream)
                 if hasattr(oww, "reset"):
@@ -332,3 +376,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nTARS stopped.")
+    except CloudSpeechError as exc:
+        print(f"Speech unavailable: {exc}", file=sys.stderr)
+        sys.exit(1)

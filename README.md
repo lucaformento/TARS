@@ -29,7 +29,7 @@ I'm building a conversational robot inspired by TARS from *Interstellar*, starti
 - **Remember the conversation.** History survives wake/sleep cycles for the lifetime of the process.
 - **See where the time goes.** Logs expose transcription time, first text, first speech chunk, synthesis, playback, and gaps between playback calls.
 
-Wake-word detection, transcription, and speech synthesis run locally. Response generation uses the Anthropic API and requires internet access; the application sends conversation text to that API.
+Wake-word detection and transcription run locally. The installed default uses local Piper speech; an [optional ElevenLabs voice engine](docs/cloud-voice.md) is available for audition and still needs Pi validation. Response generation uses the Anthropic API and requires internet access. Selecting ElevenLabs also sends generated reply text to its speech API.
 
 ## Inside the voice loop
 
@@ -51,6 +51,7 @@ The current playback loop is synchronous: playing one sentence delays reading an
 | [`brain.py`](brain.py) | Owns personality state, conversation history, and API streaming. |
 | [`tars.py`](tars.py) | Terminal interface; collects streamed text into a complete reply. |
 | [`tars_voice.py`](tars_voice.py) | Audio capture, wake/follow-up loop, sentence splitting, synthesis, playback, and timing. |
+| [`cloud_speech.py`](cloud_speech.py) | Optional ElevenLabs voice setup, auditions, and streamed PCM playback. |
 
 Three decisions shape the implementation:
 

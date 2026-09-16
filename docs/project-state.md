@@ -23,7 +23,8 @@ linked technical notes instead of being duplicated here.
 ### Wake acknowledgment
 
 - TARS should say **HUH!** on a randomly selected second or third actual wake.
-  Silent wake slots and conversational follow-ups do not advance the counter.
+  Every actual wake advances the counter, including wakes with a silent
+  acknowledgment slot. Conversational follow-ups do not advance it.
 - The Pi test validated the two/three-wake scheduler and nonblocking cached-PCM
   playback path, with estimated output-device starts of roughly 46–62 ms and no
   output underflows.
@@ -41,6 +42,17 @@ linked technical notes instead of being duplicated here.
   reviewed model package has no model card or documented training provenance.
   Verify its source and reuse terms, or replace it with a documented voice,
   before distributing the model or presenting the voice as a portfolio asset.
+- Luca reports that the general voice and the pronunciation of his name still
+  sound poor, and has approved paid online speech for better quality. Selecting
+  and auditioning a replacement is now the active priority.
+- An opt-in ElevenLabs runtime (`--tts elevenlabs`) and secure account setup/name
+  audition tools are implemented and covered by local mock-network/audio tests.
+  The default model is `eleven_multilingual_v2`; the voice is selected from the
+  user's account. No cloud voice has yet been accepted or verified on the Pi.
+  Piper remains the default until that audition. See [cloud voice setup](cloud-voice.md).
+- Cloud speech sends generated reply text and limited same-reply context to
+  ElevenLabs. It does not send microphone audio to ElevenLabs. No zero-retention
+  promise is made; the account's data settings apply.
 
 ## Known problems
 
@@ -55,6 +67,9 @@ linked technical notes instead of being duplicated here.
 - Sentence playback is synchronous, so reading and synthesizing later streamed
   sentences pauses while the current sentence plays. The tested sounddevice PCM
   path is a useful basis for future output streaming.
+- The prior Piper stress-marker change did not fix the name to Luca's ear, and
+  the claimed stress-position diagnosis was not established. Pronunciation must
+  be accepted by listening to the chosen voice, including its final vowel.
 - Conversation history lasts only for the current process.
 
 ## Parked
@@ -71,11 +86,12 @@ linked technical notes instead of being duplicated here.
 
 ## Next practical actions
 
-1. Start persistent, user-correctable memories and running jokes.
-2. Build one saved engineering-checklist workflow with measurement and unit
+1. Audition replacement speech, including “Luca” and a normal reply, then verify
+   the selected engine's output routing and conversation timing on the Pi.
+2. After the voice choice, start persistent, user-correctable memories and running jokes.
+3. Build one saved engineering-checklist workflow with measurement and unit
    confirmation.
-3. When a better HUH performance is available, reuse the validated scheduler
+4. When a better HUH performance is available, reuse the validated scheduler
    and nonblocking PCM path, then retest echo behavior before integration.
-4. Investigate input overflows and unexplained wake activations during a future
+5. Investigate input overflows and unexplained wake activations during a future
    controlled audio session.
-
