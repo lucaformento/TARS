@@ -53,7 +53,11 @@ Edit these constants near the top of [`tars_voice.py`](../tars_voice.py):
 
 The committed paths currently point to `/home/lucadev/TARS/`, and `MIC_NAME` is `USB PnP`. Playback uses ALSA's `default` output device. Confirm that the microphone can capture audio and that `aplay` can play through that output.
 
-Before synthesis, the voice interface applies a speech-only phoneme override for the builder's name. It changes how Piper pronounces “Luca” without changing the response text stored in conversation history.
+Before synthesis, the voice interface applies the Italian pronunciation
+`ˈluːka` (“LOO-kah”) to the builder's name. This speech-only override does not
+change the response text stored in conversation history. Audition it without
+starting the microphone loop by running
+`python tars_voice.py --test-name`.
 
 ## Start a conversation
 

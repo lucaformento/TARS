@@ -43,6 +43,8 @@ TRIM_PAD = 2              # frames of padding kept around speech (160ms)
 FIRST_WAIT = 6.0          # after the wake word, how long to wait for you
 FOLLOWUP_WAIT = 8.0       # after he answers, how long before he sleeps
 TIMING = "--diagnostics" in sys.argv[1:]  # opt-in per-stage latency
+TEST_NAME = "--test-name" in sys.argv[1:]
+LUCA_PRONUNCIATION = "[[\u02c8lu\u02d0ka]]"  # Italian: LOO-kah, stress first
 
 EMOJI = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF"
                    "\U0001F1E6-\U0001F1FF\U0000FE0F\U00002190-\U000021FF]+")
@@ -131,7 +133,7 @@ def speak(voice, text):
     """
     text = sanitize(text)
     # Keep the written name unchanged while guiding the selected voice's pronunciation.
-    text = re.sub(r"(?i)\bluca\b", "[[l\u02c8u\u02d0ka]]", text)
+    text = re.sub(r"(?i)\bluca\b", LUCA_PRONUNCIATION, text)
     if not text:
         return 0.0, 0.0, None
     with tempfile.TemporaryDirectory(prefix="tars-speech-") as folder:
@@ -254,6 +256,12 @@ def main():
         module="onnxruntime.*",
     )
 
+    piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
+    if TEST_NAME:
+        print("Testing the Italian pronunciation: LOO-kah.")
+        speak(piper, "Luca. I'm listening, Luca.")
+        return
+
     dev = next(i for i, d in enumerate(sd.query_devices())
                if MIC_NAME in d["name"] and d["max_input_channels"] > 0)
 
@@ -264,7 +272,6 @@ def main():
         vad_threshold=WAKE_VAD_THRESHOLD,
     )
     stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
-    piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
     tars = TARS(voice=True)          # short, speech-shaped replies
 
     with sd.InputStream(device=dev, samplerate=SR, channels=1,
