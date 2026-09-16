@@ -6,9 +6,11 @@ go quiet for a while, so follow-ups need no wake word.
 
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import wave
+import warnings
 from contextlib import closing
 
 import numpy as np
@@ -40,7 +42,7 @@ MIN_SPEECH = 0.4          # shorter than this is a cough, not a sentence
 TRIM_PAD = 2              # frames of padding kept around speech (160ms)
 FIRST_WAIT = 6.0          # after the wake word, how long to wait for you
 FOLLOWUP_WAIT = 8.0       # after he answers, how long before he sleeps
-TIMING = True             # print per-stage latency
+TIMING = "--diagnostics" in sys.argv[1:]  # opt-in per-stage latency
 
 EMOJI = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF"
                    "\U0001F1E6-\U0001F1FF\U0000FE0F\U00002190-\U000021FF]+")
@@ -245,67 +247,81 @@ def print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at):
     print(f"  Response cycle: {metrics['cycle']:.2f}s (includes synthesis and playback)\n")
 
 
-dev = next(i for i, d in enumerate(sd.query_devices())
-           if MIC_NAME in d["name"] and d["max_input_channels"] > 0)
+def main():
+    warnings.filterwarnings(
+        "ignore",
+        message="Specified provider 'CUDAExecutionProvider' is not in available provider names.*",
+        module="onnxruntime.*",
+    )
 
-oww = openwakeword.Model(
-    wakeword_model_paths=[WAKE_MODEL],
-    melspec_onnx_model_path=MELSPEC_MODEL,
-    embedding_onnx_model_path=EMBEDDING_MODEL,
-    vad_threshold=WAKE_VAD_THRESHOLD,
-)
-stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
-piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
-tars = TARS(voice=True)          # short, speech-shaped replies
+    dev = next(i for i, d in enumerate(sd.query_devices())
+               if MIC_NAME in d["name"] and d["max_input_channels"] > 0)
 
-with sd.InputStream(device=dev, samplerate=SR, channels=1,
-                    dtype="int16", blocksize=FRAME) as stream:
+    oww = openwakeword.Model(
+        wakeword_model_paths=[WAKE_MODEL],
+        melspec_onnx_model_path=MELSPEC_MODEL,
+        embedding_onnx_model_path=EMBEDDING_MODEL,
+        vad_threshold=WAKE_VAD_THRESHOLD,
+    )
+    stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+    piper = PiperVoice.load(VOICE, config_path=VOICE_CONFIG)
+    tars = TARS(voice=True)          # short, speech-shaped replies
 
-    print("Calibrating room noise, stay quiet...")
-    threshold = calibrate(stream)
-    print(f"Threshold: {threshold:.0f}  |  STT: {STT_MODEL}")
-    print("Say 'hey tars' to start. Ctrl+C to stop.\n")
+    with sd.InputStream(device=dev, samplerate=SR, channels=1,
+                        dtype="int16", blocksize=FRAME) as stream:
 
-    wake_ready_at = 0.0
-    while True:
-        # --- asleep: nothing but wake-word detection ---
-        audio, _ = stream.read(FRAME)
-        wake_score = max(oww.predict(audio.flatten()).values())
-        if time.monotonic() < wake_ready_at or wake_score <= WAKE_THRESHOLD:
-            continue
+        print("Calibrating room noise, stay quiet...")
+        threshold = calibrate(stream)
+        print(f"Threshold: {threshold:.0f}  |  STT: {STT_MODEL}")
+        print("Say 'hey tars' to start. Ctrl+C to stop.\n")
 
-        print("[wake]")
-        if hasattr(oww, "reset"):
-            oww.reset()
-        flush(stream)
-        wait = FIRST_WAIT
-
-        # --- awake: keep talking until silence sends him back to sleep ---
+        wake_ready_at = 0.0
         while True:
-            clip, last_loud_read_at = record_utterance(stream, threshold, wait)
-            if clip is None:
-                print("[sleep]\n")
-                wake_ready_at = time.monotonic() + WAKE_COOLDOWN
-                break
+            # --- asleep: nothing but wake-word detection ---
+            audio, _ = stream.read(FRAME)
+            wake_score = max(oww.predict(audio.flatten()).values())
+            if time.monotonic() < wake_ready_at or wake_score <= WAKE_THRESHOLD:
+                continue
 
-            clip_s = len(clip) / SR
-
-            t0 = time.perf_counter()
-            segments, _ = stt.transcribe(clip, language="en")
-            heard = " ".join(s.text for s in segments).strip()
-            stt_s = time.perf_counter() - t0
-
-            if not heard:
-                print("[sleep]\n")
-                break
-
-            print(f"  Luca: {heard}")
-
-            metrics = speak_stream(tars, piper, heard)
-            if TIMING:
-                print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at)
-
-            flush(stream)
+            print("[wake]")
             if hasattr(oww, "reset"):
                 oww.reset()
-            wait = FOLLOWUP_WAIT
+            flush(stream)
+            wait = FIRST_WAIT
+
+            # --- awake: keep talking until silence sends him back to sleep ---
+            while True:
+                clip, last_loud_read_at = record_utterance(stream, threshold, wait)
+                if clip is None:
+                    print("[sleep]\n")
+                    wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                    break
+
+                clip_s = len(clip) / SR
+
+                t0 = time.perf_counter()
+                segments, _ = stt.transcribe(clip, language="en")
+                heard = " ".join(s.text for s in segments).strip()
+                stt_s = time.perf_counter() - t0
+
+                if not heard:
+                    print("[sleep]\n")
+                    break
+
+                print(f"  Luca: {heard}")
+
+                metrics = speak_stream(tars, piper, heard)
+                if TIMING:
+                    print_stream_timing(metrics, clip_s, stt_s, last_loud_read_at)
+
+                flush(stream)
+                if hasattr(oww, "reset"):
+                    oww.reset()
+                wait = FOLLOWUP_WAIT
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nTARS stopped.")

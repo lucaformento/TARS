@@ -63,6 +63,10 @@ From the project directory with the virtual environment active:
 python tars_voice.py
 ```
 
+Normal operation shows the conversation and wake/sleep state without the
+per-stage timing report. To temporarily restore the development measurements,
+run `python tars_voice.py --diagnostics`.
+
 1. Stay quiet during room-noise calibration.
 2. Say **“Hey TARS.”** Wait for the terminal's `[wake]` indication, then ask a question.
 3. Let TARS finish speaking. Ask a follow-up within eight seconds to continue without another wake word.
