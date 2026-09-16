@@ -281,6 +281,8 @@ def main():
         if args.test_name:
             print("Name audition: listen for LOO-kah.")
             speak(voice, NAME_TEST)
+            if isinstance(voice, ElevenLabsVoice) and voice.last_underflows:
+                print(f"Audio stream underflows: {voice.last_underflows}")
             return
         run_conversation(voice, args.diagnostics)
 

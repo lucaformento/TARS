@@ -47,12 +47,14 @@ linked technical notes instead of being duplicated here.
   and auditioning a replacement is now the active priority.
 - An opt-in ElevenLabs runtime (`--tts elevenlabs`) and secure account setup/name
   audition tools are implemented and covered by local mock-network/audio tests.
-  The default model is `eleven_multilingual_v2`; the voice is selected from the
-  user's account. No cloud voice has yet been accepted or verified on the Pi.
-  Piper remains the default until that audition. See [cloud voice setup](cloud-voice.md).
-- Matching Brian and Roger samples were generated in the ElevenLabs browser
-  workspace with Multilingual v2. Luca's listening verdict is pending; browser
-  playback does not validate the new Pi playback path.
+  The default model is `eleven_multilingual_v2`. After matching Brian and Roger
+  auditions, Luca selected Roger (`CwhRBWXzGAHq8TQ4Fs17`) as the candidate.
+  The accepted browser settings are speed 1.0, stability 0.5, similarity 0.75,
+  style 0.0, and speaker boost enabled. Plain `Luca` is retained for the first
+  Pi audition. The Pi configuration succeeded and Roger pronounced “Luca” well.
+  Repeated samples exposed intermittent streamed-audio starvation, so a
+  half-second PCM startup buffer is prepared for the next Pi trial. Piper remains
+  the default until that reliability trial passes. See [cloud voice setup](cloud-voice.md).
 - Cloud speech sends generated reply text and limited same-reply context to
   ElevenLabs. It does not send microphone audio to ElevenLabs. No zero-retention
   promise is made; the account's data settings apply.

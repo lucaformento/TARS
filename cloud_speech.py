@@ -20,6 +20,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 API_ROOT = "https://api.elevenlabs.io"
 SAMPLE_RATE = 24000
+BYTES_PER_SAMPLE = 2
+# Hold a short PCM lead before starting the speaker. This absorbs normal
+# internet/generation jitter without waiting for the complete response.
+PLAYBACK_PREROLL_BYTES = int(SAMPLE_RATE * BYTES_PER_SAMPLE * 0.5)
 DEFAULT_MODEL = "eleven_multilingual_v2"
 MODELS = (DEFAULT_MODEL, "eleven_flash_v2_5")
 SOCKET_TIMEOUT = 15.0
@@ -165,7 +169,8 @@ class ElevenLabsVoice:
     def _pcm_chunks(self, text):
         payload = {"text": text, "model_id": self.model_id,
                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75,
-                                      "style": 0.0, "use_speaker_boost": True}}
+                                      "style": 0.0, "use_speaker_boost": True,
+                                      "speed": 1.0}}
         if self._previous_text:
             payload["previous_text"] = self._previous_text
         started, received, pending = time.monotonic(), 0, b""
@@ -217,10 +222,19 @@ class ElevenLabsVoice:
                 self._output = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=1,
                                                   dtype="int16", latency="high")
             with closing(self._pcm_chunks(text)) as chunks:
+                # Starting on the first small network chunk can starve the Pi's
+                # speaker whenever the following chunk is delayed. Accumulate a
+                # half-second lead, while retaining streaming for longer replies.
+                preroll = bytearray()
                 for pcm in chunks:
-                    if requested is None:
-                        self._output.start()
-                        requested = time.perf_counter()
+                    preroll.extend(pcm)
+                    if len(preroll) >= PLAYBACK_PREROLL_BYTES:
+                        break
+                if preroll:
+                    self._output.start()
+                    requested = time.perf_counter()
+                    self.last_underflows += int(bool(self._output.write(bytes(preroll))))
+                for pcm in chunks:
                     self.last_underflows += int(bool(self._output.write(pcm)))
             self._output.stop()  # drain the final samples before listening again
             ended = time.perf_counter()

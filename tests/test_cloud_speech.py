@@ -76,6 +76,7 @@ class VoiceTests(unittest.TestCase):
                          b"\x01\x00\x02\x00")
         self.assertTrue(first.closed)
         self.assertEqual(self.payload()["text"], "Hello, Luca.")
+        self.assertEqual(self.payload()["voice_settings"]["speed"], 1.0)
         self.assertNotIn("previous_text", self.payload())
         request = self.opener.open.call_args.args[0]
         self.assertTrue(request.full_url.endswith("?output_format=pcm_24000"))
@@ -92,6 +93,14 @@ class VoiceTests(unittest.TestCase):
         self.assertNotIn("previous_text", self.payload())
         voice.close()
         self.device.close.assert_called_once()
+
+    def test_preroll_combines_network_chunks_before_playback(self):
+        block = b"\x00\x00" * 2048
+        self.respond([block] * 7)
+        cloud.ElevenLabsVoice().speak("A longer sentence for the buffer.")
+        writes = [call.args[0] for call in self.device.write.call_args_list]
+        self.assertGreaterEqual(len(writes[0]), cloud.PLAYBACK_PREROLL_BYTES)
+        self.assertEqual(sum(map(len, writes)), len(block) * 7)
 
     def test_name_alias_is_opt_in_and_whole_word_only(self):
         voice = cloud.ElevenLabsVoice()

@@ -8,10 +8,12 @@ how the voice sounds or how quickly the Pi responds.
 
 ## What to choose
 
-Choose a voice in your ElevenLabs account's voice library by listening to its
-preview, then add it to **My Voices** and copy its voice ID. There is no hardcoded
-voice ID in this integration. Start with a clear, conversational male voice and
-judge it on normal sentences as well as “Luca.”
+Roger — Laid-Back, Casual, Resonant — won the browser audition. Its voice ID is
+`CwhRBWXzGAHq8TQ4Fs17`. The selected sample used speed 1.0, stability 0.5,
+similarity 0.75, style 0.0, and speaker boost. These match the runtime settings.
+The first Pi audition pronounced “Luca” correctly and sounded natural at speed
+1.0. Some repeated trials stuttered when network chunks arrived unevenly, so the
+player now holds a half-second PCM lead before starting the speaker.
 
 The default model is `eleven_multilingual_v2`, selected for quality and consistent
 delivery. `eleven_flash_v2_5` is also supported for a later speed comparison.
@@ -25,11 +27,11 @@ Stop the running TARS process with Ctrl+C, then run these in the SSH terminal:
 ```bash
 cd ~/TARS
 git pull --ff-only origin main
-./venv/bin/python cloud_speech.py configure --voice-id YOUR_VOICE_ID --save
+./venv/bin/python cloud_speech.py configure --voice-id CwhRBWXzGAHq8TQ4Fs17 --save
 ```
 
-Replace `YOUR_VOICE_ID` with the ID copied from your account. The helper asks for
-the API key with input hidden; do not put it in the command or send it in chat.
+The helper asks for the API key with input hidden; do not put it in the command
+or send it in chat.
 It verifies account voice access using a read-only request, then saves only
 `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in the existing, Git-ignored `.env`.
 Other entries, including the Anthropic key, are preserved. On the Pi, `.env`
