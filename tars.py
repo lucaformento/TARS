@@ -1,13 +1,25 @@
 """Text front-end for TARS."""
 
-from brain import TARS
+import argparse
 
-tars = TARS()
-print("TARS is online. Type 'quit' to exit.\n")
+from brain import SUPPORTED_MODELS, TARS
 
-while True:
-    user_input = input("Luca: ")
-    if user_input.lower().strip() == "quit":
-        print("TARS: Powering down. Don't break anything without me.")
-        break
-    print(f"TARS: {tars.respond(user_input)}\n")
+
+def main():
+    parser = argparse.ArgumentParser(description="Chat with TARS in the terminal.")
+    parser.add_argument("--brain-model", choices=SUPPORTED_MODELS)
+    args = parser.parse_args()
+
+    tars = TARS(model=args.brain_model)
+    print(f"TARS is online with {tars.model}. Type 'quit' to exit.\n")
+
+    while True:
+        user_input = input("Luca: ")
+        if user_input.lower().strip() == "quit":
+            print("TARS: Powering down. Don't break anything without me.")
+            break
+        print(f"TARS: {tars.respond(user_input)}\n")
+
+
+if __name__ == "__main__":
+    main()

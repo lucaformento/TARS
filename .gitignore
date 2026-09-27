@@ -219,3 +219,8 @@ __marimo__/
 voices/
 wakeword/
 *.wav
+
+# Private persistent memory and recovery files
+/memory.json
+/memory.corrupt*.json
+/memory.json.*.tmp

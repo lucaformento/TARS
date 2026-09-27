@@ -1,4 +1,4 @@
-"""Opt-in ElevenLabs speech with streamed mono 24 kHz signed 16-bit PCM.
+"""Opt-in ElevenLabs speech with buffered mono 24 kHz signed 16-bit PCM.
 
 No API key or voice is selected implicitly. Importing this module does not
 contact the service, open audio devices, or load speech-recognition models.
@@ -6,12 +6,14 @@ contact the service, open audio devices, or load speech-recognition models.
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import dataclass
 import http.client
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -21,9 +23,6 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 API_ROOT = "https://api.elevenlabs.io"
 SAMPLE_RATE = 24000
 BYTES_PER_SAMPLE = 2
-# Hold a short PCM lead before starting the speaker. This absorbs normal
-# internet/generation jitter without waiting for the complete response.
-PLAYBACK_PREROLL_BYTES = int(SAMPLE_RATE * BYTES_PER_SAMPLE * 0.5)
 DEFAULT_MODEL = "eleven_multilingual_v2"
 MODELS = (DEFAULT_MODEL, "eleven_flash_v2_5")
 SOCKET_TIMEOUT = 15.0
@@ -39,6 +38,19 @@ VOICE_TEST = (
 
 class CloudSpeechError(RuntimeError):
     """A safe, actionable error; never contains an API response or a key."""
+
+
+class SpeechPreparationCancelled(Exception):
+    """Internal cooperative cancellation for the sentence lookahead worker."""
+
+
+@dataclass(frozen=True)
+class PreparedSpeech:
+    """One fully downloaded sentence, ready for real-time device playback."""
+
+    text: str
+    pcm: bytes
+    stats: dict
 
 
 class _NoRedirects(HTTPRedirectHandler):
@@ -153,7 +165,10 @@ class ElevenLabsVoice:
             raise CloudSpeechError("TARS_NAME_ALIAS must be a short plain-text pronunciation, such as Loo kah.")
         self._output = None
         self._previous_text = ""
+        self._active_response = None
+        self._active_response_lock = threading.Lock()
         self.last_underflows = 0
+        self.last_stats = {}
 
     def begin_response(self):
         self._previous_text = ""
@@ -166,7 +181,25 @@ class ElevenLabsVoice:
             return re.sub(r"(?i)\bluca\b", lambda _: self.name_alias, text)
         return text
 
-    def _pcm_chunks(self, text):
+    def ensure_output(self):
+        """Open the output device before any paid generation request."""
+        if self._output is None:
+            import sounddevice as sd
+
+            self._output = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=1,
+                                              dtype="int16", latency=0.2)
+
+    def cancel_pending(self):
+        """Best-effort unblock of a lookahead HTTP read during cancellation."""
+        with self._active_response_lock:
+            response = self._active_response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def _pcm_chunks(self, text, cancel_event=None):
         payload = {"text": text, "model_id": self.model_id,
                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75,
                                       "style": 0.0, "use_speaker_boost": True,
@@ -175,74 +208,153 @@ class ElevenLabsVoice:
             payload["previous_text"] = self._previous_text
         started, received, pending = time.monotonic(), 0, b""
         path = f"/v1/text-to-speech/{self.voice_id}/stream?output_format=pcm_24000"
-        with _request(path, self._key, payload) as response:
-            mime = response.headers.get_content_type()
-            if mime not in {"audio/pcm", "audio/x-pcm", "application/octet-stream"}:
-                raise CloudSpeechError("ElevenLabs returned an unexpected audio format; playback stopped.")
-            while True:
-                if time.monotonic() - started > REQUEST_DEADLINE:
-                    raise CloudSpeechError("ElevenLabs speech exceeded its time limit.")
-                chunk = response.read(4096)
-                if not chunk:
-                    break
-                received += len(chunk)
-                if received > MAX_AUDIO_BYTES:
-                    raise CloudSpeechError("ElevenLabs speech exceeded the audio size limit.")
-                pending += chunk
-                aligned = len(pending) - len(pending) % 2
-                if aligned:
-                    yield pending[:aligned]
-                    pending = pending[aligned:]
-            if not received or pending:
-                raise CloudSpeechError("ElevenLabs returned empty or incomplete PCM audio.")
+        try:
+            with _request(path, self._key, payload) as response:
+                with self._active_response_lock:
+                    self._active_response = response
+                try:
+                    mime = response.headers.get_content_type()
+                    if mime not in {"audio/pcm", "audio/x-pcm", "application/octet-stream"}:
+                        raise CloudSpeechError(
+                            "ElevenLabs returned an unexpected audio format; playback stopped."
+                        )
+                    while True:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise SpeechPreparationCancelled()
+                        if time.monotonic() - started > REQUEST_DEADLINE:
+                            raise CloudSpeechError("ElevenLabs speech exceeded its time limit.")
+                        chunk = response.read(4096)
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > MAX_AUDIO_BYTES:
+                            raise CloudSpeechError("ElevenLabs speech exceeded the audio size limit.")
+                        pending += chunk
+                        aligned = len(pending) - len(pending) % 2
+                        if aligned:
+                            yield pending[:aligned]
+                            pending = pending[aligned:]
+                    if not received or pending:
+                        raise CloudSpeechError("ElevenLabs returned empty or incomplete PCM audio.")
+                finally:
+                    with self._active_response_lock:
+                        if self._active_response is response:
+                            self._active_response = None
+        except CloudSpeechError:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SpeechPreparationCancelled() from None
+            raise
 
-    def speak(self, text):
-        """Return wait-before-playback, playback phase, and first write timestamp.
-
-        Playback phase includes overlapping network/generation work and drain;
-        it is not a measurement of pure device time or acoustic onset.
-        """
+    def prepare(self, text, cancel_event=None):
+        """Fully download one sentence without starting playback."""
         from contextlib import closing
-        import sounddevice as sd
 
         text = self.prepare_text(text.strip())
         if not text:
-            return 0.0, 0.0, None
+            return None
         if len(text) > 2500:
             raise CloudSpeechError("Speech chunk exceeds 2,500 characters; shorten the reply.")
         if sys.byteorder != "little":
             raise CloudSpeechError("This PCM playback path requires a little-endian machine.")
+        self.ensure_output()
         started = time.perf_counter()
-        requested = None
-        self.last_underflows = 0
+        first_pcm_at = None
+        previous_pcm_at = None
+        max_pcm_chunk_interval = 0.0
+        pcm_chunks = 0
+        pcm_buffer = bytearray()
         try:
-            # Open the device before spending credits on generation. Reuse its
-            # PortAudio handle across sentences, stopping/draining between them.
-            if self._output is None:
-                self._output = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=1,
-                                                  dtype="int16", latency="high")
-            with closing(self._pcm_chunks(text)) as chunks:
-                # Starting on the first small network chunk can starve the Pi's
-                # speaker whenever the following chunk is delayed. Accumulate a
-                # half-second lead, while retaining streaming for longer replies.
-                preroll = bytearray()
+            with closing(self._pcm_chunks(text, cancel_event)) as chunks:
                 for pcm in chunks:
-                    preroll.extend(pcm)
-                    if len(preroll) >= PLAYBACK_PREROLL_BYTES:
-                        break
-                if preroll:
-                    self._output.start()
-                    requested = time.perf_counter()
-                    self.last_underflows += int(bool(self._output.write(bytes(preroll))))
-                for pcm in chunks:
-                    self.last_underflows += int(bool(self._output.write(pcm)))
-            self._output.stop()  # drain the final samples before listening again
-            ended = time.perf_counter()
-            self._previous_text = text[-500:]
-            return requested - started, ended - requested, requested
+                    arrived_at = time.perf_counter()
+                    if first_pcm_at is None:
+                        first_pcm_at = arrived_at
+                    if previous_pcm_at is not None:
+                        max_pcm_chunk_interval = max(
+                            max_pcm_chunk_interval, arrived_at - previous_pcm_at
+                        )
+                    previous_pcm_at = arrived_at
+                    pcm_chunks += 1
+                    pcm_buffer.extend(pcm)
         except BaseException:
-            if self._output is not None:
+            if cancel_event is None or not cancel_event.is_set():
+                self._abort_output()
+            raise
+        ended = time.perf_counter()
+        audio_bytes = len(pcm_buffer)
+        stats = {
+            "prepare_s": ended - started,
+            "download_s": ended - started,
+            # These are application-level PCM generator observations, not
+            # packet timings or a pure measurement of provider latency.
+            "time_to_first_pcm_s": (None if first_pcm_at is None
+                                     else first_pcm_at - started),
+            "max_pcm_chunk_interval_s": max_pcm_chunk_interval,
+            "pcm_chunks": pcm_chunks,
+            "audio_bytes": audio_bytes,
+            "audio_s": audio_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE),
+            "write_s": 0.0,
+            "drain_s": 0.0,
+            "playback_s": 0.0,
+            "underflows": 0,
+        }
+        self._previous_text = text[-500:]
+        return PreparedSpeech(text=text, pcm=bytes(pcm_buffer), stats=stats)
+
+    def _abort_output(self):
+        if self._output is not None:
+            try:
                 self._output.abort()
+            except Exception:
+                pass
+
+    def play(self, prepared):
+        """Play a previously prepared sentence and return the legacy timing tuple."""
+        if prepared is None:
+            return 0.0, 0.0, None
+        self.ensure_output()
+        self.last_underflows = 0
+        self.last_stats = dict(prepared.stats)
+        try:
+            self._output.start()
+            requested = time.perf_counter()
+            underflowed = bool(self._output.write(prepared.pcm))
+            write_finished = time.perf_counter()
+            # sounddevice otherwise defaults to ignore_errors=True and can
+            # silently hide a failed drain/stop from the acceptance metrics.
+            self._output.stop(ignore_errors=False)
+            ended = time.perf_counter()
+            self.last_underflows = int(underflowed)
+            self.last_stats.update({
+                "write_s": write_finished - requested,
+                "drain_s": ended - write_finished,
+                "playback_s": ended - requested,
+                "underflows": self.last_underflows,
+            })
+            if self.last_underflows:
+                print("[audio warning] Output underflow detected during ElevenLabs playback.",
+                      file=sys.stderr)
+            return prepared.stats["prepare_s"], ended - requested, requested
+        except BaseException:
+            self._abort_output()
+            raise
+
+    def speak(self, text):
+        """Download one bounded sentence, play it, and return timing information.
+
+        The existing three-value return contract is retained: wait before the
+        first write, playback phase, and first-write timestamp. Detailed safe
+        measurements for the most recent call are also available in
+        ``last_stats``. Fully buffering a sentence keeps network and generation
+        stalls away from the real-time output device.
+        """
+        started = time.perf_counter()
+        try:
+            prepared = self.prepare(text)
+            _, playback, requested = self.play(prepared)
+            return ((0.0 if requested is None else requested - started), playback, requested)
+        except BaseException:
+            self._abort_output()
             raise
 
     def close(self):
@@ -264,6 +376,8 @@ def main():
     audition.add_argument("--model", choices=MODELS)
     audition.add_argument("--name-alias", help='Optional speech-only spelling, e.g. "Loo kah".')
     audition.add_argument("--test-name", action="store_true")
+    audition.add_argument("--diagnostics", action="store_true",
+                          help="Print safe download and playback timing for this sample.")
     configure = commands.add_parser("configure", help="Enter a key privately and verify the selected voice.")
     configure.add_argument("--voice-id", required=True)
     configure.add_argument("--save", action="store_true", help="Save the verified key and voice in this project's .env.")
@@ -299,8 +413,18 @@ def main():
         print("Generating one ElevenLabs sample; account credits apply.")
         voice.speak(NAME_TEST if args.test_name else VOICE_TEST)
         print("Audition finished. Compare Luca's first vowel, final vowel, and sentence flow.")
-        if voice.last_underflows:
-            print(f"Output underflows during audition: {voice.last_underflows}")
+        if args.diagnostics:
+            stats = voice.last_stats
+            first = stats["time_to_first_pcm_s"]
+            first_text = "n/a" if first is None else f"{first:.2f}s"
+            print(
+                "Timing: "
+                f"first PCM {first_text}; download {stats['download_s']:.2f}s; "
+                f"audio {stats['audio_s']:.2f}s in {stats['pcm_chunks']} PCM chunks; "
+                f"largest PCM interval {stats['max_pcm_chunk_interval_s']:.2f}s; "
+                f"playback {stats['playback_s']:.2f}s; "
+                f"underflows {stats['underflows']}"
+            )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -33,6 +34,30 @@ class Response:
 
     def __exit__(self, *args):
         self.closed = True
+
+
+class GatedResponse(Response):
+    """Pause a network read so tests can inspect playback while bytes are late."""
+
+    def __init__(self, chunks, blocked, release, events):
+        super().__init__(chunks)
+        self.blocked = blocked
+        self.release = release
+        self.events = events
+        self.reads = 0
+
+    def read(self, size):
+        self.reads += 1
+        self.events.append(f"read-{self.reads}")
+        if self.reads == 2:
+            self.blocked.set()
+            if not self.release.wait(2):
+                raise TimeoutError("test did not release delayed network read")
+        return super().read(size)
+
+    def __exit__(self, *args):
+        self.events.append("response-closed")
+        return super().__exit__(*args)
 
 
 class VoiceTests(unittest.TestCase):
@@ -87,6 +112,7 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(self.payload()["previous_text"], "Hello, Luca.")
         self.assertEqual(self.audio.RawOutputStream.call_count, 1)
         self.assertEqual(self.device.stop.call_count, 2)
+        self.device.stop.assert_called_with(ignore_errors=False)
         voice.begin_response()
         self.respond([b"\x00\x00"])
         voice.speak("Next answer.")
@@ -94,13 +120,99 @@ class VoiceTests(unittest.TestCase):
         voice.close()
         self.device.close.assert_called_once()
 
-    def test_preroll_combines_network_chunks_before_playback(self):
+    def test_prepare_downloads_without_playing_until_play_is_called(self):
+        voice = cloud.ElevenLabsVoice()
+        self.respond([b"\x01\x00", b"\x02\x00"])
+
+        prepared = voice.prepare("First sentence.")
+
+        self.device.start.assert_not_called()
+        self.device.write.assert_not_called()
+        self.device.stop.assert_not_called()
+        self.assertEqual(prepared.pcm, b"\x01\x00\x02\x00")
+
+        voice.play(prepared)
+
+        self.device.start.assert_called_once()
+        self.device.write.assert_called_once_with(b"\x01\x00\x02\x00")
+        self.device.stop.assert_called_once_with(ignore_errors=False)
+
+    def test_delayed_network_is_fully_buffered_before_real_time_playback(self):
+        events = []
+        blocked, release = threading.Event(), threading.Event()
         block = b"\x00\x00" * 2048
-        self.respond([block] * 7)
-        cloud.ElevenLabsVoice().speak("A longer sentence for the buffer.")
-        writes = [call.args[0] for call in self.device.write.call_args_list]
-        self.assertGreaterEqual(len(writes[0]), cloud.PLAYBACK_PREROLL_BYTES)
-        self.assertEqual(sum(map(len, writes)), len(block) * 7)
+        response = GatedResponse([block, block, block], blocked, release, events)
+        self.opener.open.return_value = response
+        self.device.start.side_effect = lambda: events.append("device-start")
+        self.device.write.side_effect = lambda data: events.append(("device-write", len(data))) or False
+
+        voice = cloud.ElevenLabsVoice()
+        result = []
+        worker = threading.Thread(target=lambda: result.append(voice.speak("A delayed sentence.")))
+        worker.start()
+        self.assertTrue(blocked.wait(1), "network read never reached the delay gate")
+        self.device.start.assert_not_called()
+        self.device.write.assert_not_called()
+
+        release.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "speech worker did not finish")
+        self.assertEqual(len(result), 1)
+        self.assertTrue(response.closed)
+        self.assertLess(events.index("response-closed"), events.index("device-start"))
+        self.assertEqual(self.device.write.call_count, 1)
+        self.assertEqual(self.device.write.call_args.args[0], block * 3)
+        self.assertEqual(voice.last_stats["audio_bytes"], len(block) * 3)
+        self.assertEqual(voice.last_stats["audio_s"], len(block) * 3 / 48000)
+        self.assertEqual(voice.last_stats["pcm_chunks"], 3)
+
+    def test_playback_consumption_cannot_block_or_resume_network_download(self):
+        events = []
+        playback_blocked, release = threading.Event(), threading.Event()
+        block = b"\x00\x00" * 512
+        response = self.respond([block, block])
+
+        def consume_in_real_time(data):
+            events.append("playback-started")
+            self.assertTrue(response.closed)
+            playback_blocked.set()
+            if not release.wait(2):
+                raise TimeoutError("test did not release simulated playback")
+            events.append("playback-finished")
+            return False
+
+        self.device.write.side_effect = consume_in_real_time
+        voice = cloud.ElevenLabsVoice()
+        failures = []
+
+        def run():
+            try:
+                voice.speak("Playback is deliberately slow.")
+            except BaseException as exc:
+                failures.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        self.assertTrue(playback_blocked.wait(1), "playback never reached its delay gate")
+        self.assertTrue(response.closed)
+        self.assertEqual(voice.last_stats["pcm_chunks"], 2)
+        release.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "speech worker did not finish")
+        self.assertEqual(failures, [])
+        self.assertEqual(events, ["playback-started", "playback-finished"])
+
+    def test_underflow_is_always_reported_and_recorded(self):
+        self.respond([b"\x00\x00" * 16])
+        self.device.write.return_value = True
+        voice = cloud.ElevenLabsVoice()
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            voice.speak("Report the audio problem.")
+        self.assertIn("Output underflow", stderr.getvalue())
+        self.assertEqual(voice.last_underflows, 1)
+        self.assertEqual(voice.last_stats["underflows"], 1)
+        self.assertGreaterEqual(voice.last_stats["download_s"], 0)
+        self.assertGreaterEqual(voice.last_stats["playback_s"], 0)
 
     def test_name_alias_is_opt_in_and_whole_word_only(self):
         voice = cloud.ElevenLabsVoice()
@@ -157,6 +269,14 @@ class VoiceTests(unittest.TestCase):
         self.device.abort.assert_called()
         voice.close()
         self.device.close.assert_called_once()
+
+    def test_abort_failure_does_not_hide_original_playback_error(self):
+        self.respond([b"\x00\x00"])
+        self.device.write.side_effect = ValueError("original playback failure")
+        self.device.abort.side_effect = RuntimeError("cleanup failure")
+
+        with self.assertRaisesRegex(ValueError, "original playback failure"):
+            cloud.ElevenLabsVoice().speak("Hello.")
 
     def test_device_failure_happens_before_charged_request(self):
         self.audio.RawOutputStream.side_effect = RuntimeError("no device")
