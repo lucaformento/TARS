@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import wave
 import warnings
 from statistics import median
@@ -309,6 +310,18 @@ def paused_input(stream):
             raise MicrophoneStreamError(
                 "Microphone input did not restart; TARS stopped instead of listening silently."
             ) from exc
+
+
+def report_turn_failure(exc, diagnostics=False):
+    """Describe a recoverable turn failure; the caller returns TARS to sleep."""
+    if isinstance(exc, CloudSpeechError):
+        print(f"[speech unavailable] {exc}")
+        return
+    lines = str(exc).strip().splitlines()
+    detail = f": {lines[0][:200]}" if lines else ""
+    print(f"[turn failed] {type(exc).__name__}{detail}")
+    if diagnostics:
+        traceback.print_exc()
 
 
 def prepare_diagnostic_directory(value):
@@ -802,8 +815,18 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                     # Missing samples can turn a clear question into unrelated
                     # text. Never send known-damaged audio to Whisper or Claude.
                     print("  [audio retry] Part of that recording was lost; please repeat it.")
-                    with paused_input(buffered_input):
-                        speak(voice, "I lost part of that. Please say it again.")
+                    try:
+                        with paused_input(buffered_input):
+                            speak(voice, "I lost part of that. Please say it again.")
+                    except MicrophoneStreamError:
+                        raise
+                    except Exception as exc:
+                        report_turn_failure(exc, diagnostics)
+                        print("[sleep]\n")
+                        if hasattr(oww, "reset"):
+                            oww.reset()
+                        wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                        break
                     wait = FOLLOWUP_WAIT
                     continue
 
@@ -830,8 +853,13 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                         if heard:
                             print(f"  Luca: {heard}")
                             metrics = speak_stream(tars, voice, heard)
-                except CloudSpeechError as exc:
-                    print(f"[speech unavailable] {exc}")
+                except MicrophoneStreamError:
+                    raise
+                except Exception as exc:
+                    # paused_input has already restarted the microphone, so a
+                    # failed cloud request, audio device, or transcription ends
+                    # only this turn. A microphone that cannot restart is fatal.
+                    report_turn_failure(exc, diagnostics)
                     print("[sleep]\n")
                     if hasattr(oww, "reset"):
                         oww.reset()
