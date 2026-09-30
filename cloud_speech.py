@@ -182,7 +182,11 @@ class ElevenLabsVoice:
         return text
 
     def ensure_output(self):
-        """Open the output device before any paid generation request."""
+        """Open the output device before any paid generation request.
+
+        Call this, play(), and close() only from the thread that plays audio.
+        PortAudio device control from another thread can hang a blocking write.
+        """
         if self._output is None:
             import sounddevice as sd
 
@@ -246,7 +250,12 @@ class ElevenLabsVoice:
             raise
 
     def prepare(self, text, cancel_event=None):
-        """Fully download one sentence without starting playback."""
+        """Fully download one sentence without starting playback.
+
+        Safe on the lookahead worker thread: it never opens, stops, or aborts
+        the output device. The playing thread owns the device; a failure here
+        reaches it as an exception after the current sentence finishes.
+        """
         from contextlib import closing
 
         text = self.prepare_text(text.strip())
@@ -256,30 +265,29 @@ class ElevenLabsVoice:
             raise CloudSpeechError("Speech chunk exceeds 2,500 characters; shorten the reply.")
         if sys.byteorder != "little":
             raise CloudSpeechError("This PCM playback path requires a little-endian machine.")
-        self.ensure_output()
         started = time.perf_counter()
         first_pcm_at = None
         previous_pcm_at = None
         max_pcm_chunk_interval = 0.0
         pcm_chunks = 0
         pcm_buffer = bytearray()
-        try:
-            with closing(self._pcm_chunks(text, cancel_event)) as chunks:
-                for pcm in chunks:
-                    arrived_at = time.perf_counter()
-                    if first_pcm_at is None:
-                        first_pcm_at = arrived_at
-                    if previous_pcm_at is not None:
-                        max_pcm_chunk_interval = max(
-                            max_pcm_chunk_interval, arrived_at - previous_pcm_at
-                        )
-                    previous_pcm_at = arrived_at
-                    pcm_chunks += 1
-                    pcm_buffer.extend(pcm)
-        except BaseException:
-            if cancel_event is None or not cancel_event.is_set():
-                self._abort_output()
-            raise
+        with closing(self._pcm_chunks(text, cancel_event)) as chunks:
+            for pcm in chunks:
+                arrived_at = time.perf_counter()
+                if first_pcm_at is None:
+                    first_pcm_at = arrived_at
+                if previous_pcm_at is not None:
+                    max_pcm_chunk_interval = max(
+                        max_pcm_chunk_interval, arrived_at - previous_pcm_at
+                    )
+                previous_pcm_at = arrived_at
+                pcm_chunks += 1
+                pcm_buffer.extend(pcm)
+        if cancel_event is not None and cancel_event.is_set():
+            # A cancelled download can end early without an error, e.g. after
+            # its response was closed. Discard it so a late worker never
+            # changes the speech context of a later reply.
+            raise SpeechPreparationCancelled()
         ended = time.perf_counter()
         audio_bytes = len(pcm_buffer)
         stats = {
@@ -350,6 +358,7 @@ class ElevenLabsVoice:
         """
         started = time.perf_counter()
         try:
+            self.ensure_output()
             prepared = self.prepare(text)
             _, playback, requested = self.play(prepared)
             return ((0.0 if requested is None else requested - started), playback, requested)

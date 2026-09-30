@@ -55,6 +55,9 @@ class FakeCloudVoice(voice_frontend.ElevenLabsVoice):
     def begin_response(self):
         pass
 
+    def ensure_output(self):
+        pass
+
     def prepare(self, text, cancel_event=None):
         index = len(self.prepared)
         self.prepared.append(text)

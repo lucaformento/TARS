@@ -570,6 +570,10 @@ def _speak_stream_cloud(tars, voice, user_input, started, metrics):
         finally:
             put(("finished", finished))
 
+    # This thread owns the output device. Open it before any paid request;
+    # the worker only downloads, because a PortAudio abort from the worker
+    # during this thread's blocking write left TARS permanently deaf.
+    voice.ensure_output()
     worker = threading.Thread(target=produce, name="tars-elevenlabs-lookahead", daemon=True)
     worker.start()
     previous_play_end = None
