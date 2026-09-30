@@ -18,9 +18,11 @@ class TestParsing(unittest.TestCase):
         for phrase in ("remember that I prefer PETG Basic",
                        "Remember I prefer PETG Basic.",
                        "can you remember that I prefer PETG Basic",
-                       "please remember the fact that I prefer PETG Basic"):
+                       "please remember the fact that I prefer PETG Basic",
+                       "Hey TARS, remember I work nights"):
+            expected = "I work nights" if "work nights" in phrase else "I prefer PETG Basic"
             self.assertEqual(parse_memory_command(phrase),
-                             ("remember", "I prefer PETG Basic"), phrase)
+                             ("remember", expected), phrase)
 
     def test_bare_remember_targets_last_reply(self):
         for phrase in ("remember that", "Remember this.", "ok remember it"):
@@ -29,11 +31,26 @@ class TestParsing(unittest.TestCase):
     def test_forget(self):
         self.assertEqual(parse_memory_command("forget about the PETG thing"),
                          ("forget", "PETG thing"))
-        self.assertEqual(parse_memory_command("forget that"), ("forget", None))
+        for phrase in ("forget that", "forget this"):
+            self.assertEqual(parse_memory_command(phrase), ("forget", None), phrase)
+
+    def test_remember_questions_and_reminiscences_are_ordinary_speech(self):
+        for phrase in ("remember when we fixed the servo?",
+                       "remember when we fixed the servo",
+                       "Hey TARS, remember the time we rebuilt the audio stack",
+                       "remember that I prefer PETG?",
+                       "Hey TARS, remember I work nights?"):
+            self.assertIsNone(parse_memory_command(phrase), phrase)
+
+    def test_forget_it_is_ordinary_speech(self):
+        for phrase in ("forget it", "okay, forget it",
+                       "never mind, forget it", "please forget it"):
+            self.assertIsNone(parse_memory_command(phrase), phrase)
 
     def test_recall(self):
         for phrase in ("what do you remember", "what do you remember about me",
-                       "what do you know about me", "list your memories"):
+                       "what do you know about me", "list your memories",
+                       "what do you remember about me?"):
             self.assertEqual(parse_memory_command(phrase), ("recall", None), phrase)
 
     def test_ordinary_speech_is_inert(self):
