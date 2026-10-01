@@ -40,7 +40,8 @@ class TestParsing(unittest.TestCase):
                        "Hey TARS, remember the time we rebuilt the audio stack",
                        "remember that I prefer PETG?",
                        "Hey TARS, remember I work nights?"):
-            self.assertIsNone(parse_memory_command(phrase), phrase)
+            self.assertEqual(parse_memory_command(phrase),
+                             ("remember_rejected", None), phrase)
 
     def test_forget_it_is_ordinary_speech(self):
         for phrase in ("forget it", "okay, forget it",

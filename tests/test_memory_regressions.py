@@ -1,11 +1,12 @@
 """Regression cases from the memory candidate review; all stores are temporary."""
 
 import json
+from datetime import datetime as real_datetime
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -197,7 +198,9 @@ class MemoryRegressionTests(unittest.TestCase):
                        "Hey TARS, remember the time we fixed the servo",
                        "remember that I prefer PETG?"):
             with self.subTest(phrase=phrase):
-                self.assertIsNone(handle_memory_turn(self.store, phrase))
+                note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved", note)
+                self.assertIn("Do not claim you remembered it", note)
                 self.assertEqual(self.store.all(), before_entries)
                 self.assertEqual(self.path.read_bytes(), before_disk)
 
@@ -257,6 +260,22 @@ class MemoryRegressionTests(unittest.TestCase):
         self.assertIn('"forget that I work nights"', note)
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(len(store.all()), 2)
+
+    def test_latest_memory_date_uses_pi_local_time(self):
+        self.path.write_text(json.dumps([
+            {"id": "m_latest", "text": "I work nights", "kind": "fact",
+             "source": "stated", "created": "2026-09-29T01:00:00+00:00",
+             "updated": "2026-09-29T01:00:00+00:00"},
+        ]))
+        store = MemoryStore(self.path)
+        parsed_time = Mock()
+        parsed_time.astimezone.return_value = real_datetime(2026, 9, 28, 21, 0)
+        with patch("memory.datetime") as mocked_datetime:
+            mocked_datetime.fromisoformat.return_value = parsed_time
+            note = handle_memory_turn(store, "forget that")
+        parsed_time.astimezone.assert_called_once_with()
+        self.assertIn("September 28, 2026", note)
+        self.assertEqual(len(store.all()), 1)
 
     def test_upgrade_this_run_counts_as_saved_this_run(self):
         self.store.add("likes PETG", kind="preference", source="inferred")

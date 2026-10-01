@@ -134,7 +134,8 @@ def parse_memory_command(text):
     """Return (intent, payload) for an explicit memory command, else None.
 
     Intents: 'remember' (payload=text), 'remember_last' (payload=None),
-    'forget' (payload=text or None), 'recall' (payload=None).
+    'remember_rejected' (payload=None), 'forget' (payload=text or None),
+    'recall' (payload=None).
     Pure: no I/O, no state.
     """
     command = _strip_address(text)
@@ -147,7 +148,7 @@ def parse_memory_command(text):
     if (_REMEMBER_REQUEST.match(command)
             and ((text or "").rstrip().endswith("?")
                  or _REMEMBER_REMINISCENCE.match(command))):
-        return None
+        return ("remember_rejected", None)
     if _REMEMBER_BARE.match(command):
         return ("remember_last", None)
     if _FORGET_BARE.match(command):
@@ -509,6 +510,10 @@ def handle_memory_turn(store, user_input, last_reply=None):
         if intent == "recall":
             return (f"Luca asked what you remember. Say briefly: {store.spoken_summary()}. "
                     "Flag anything marked not confirmed as a guess.")
+        if intent == "remember_rejected":
+            return ("Nothing was saved. Luca's wording was a question or reminiscence, "
+                    "not a memory command. Do not claim you remembered it; answer him "
+                    "normally.")
         if intent == "remember":
             entry = store.add(payload, kind="fact", source="stated")
             if entry is None:
@@ -539,7 +544,7 @@ def handle_memory_turn(store, user_input, last_reply=None):
             latest = store.latest()
             if latest is None:
                 return "No memory was deleted because there are no stored memories. Say so plainly."
-            updated = datetime.fromisoformat(latest["updated"])
+            updated = datetime.fromisoformat(latest["updated"]).astimezone()
             date = f"{updated.strftime('%B')} {updated.day}, {updated.year}"
             return ("Nothing was deleted because no memory was saved during this run. "
                     f"The most recent stored memory is \"{latest['text']}\", from {date}. "
