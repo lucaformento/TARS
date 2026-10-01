@@ -1,6 +1,6 @@
 # Project state
 
-Last updated: September 27, 2026.
+Last updated: September 30, 2026.
 
 This file is the canonical record for decisions, known problems, parked work,
 and the next practical actions. Update it in the same commit whenever a test or
@@ -17,6 +17,19 @@ sentences with 0.001 and 0.000-second transitions and zero underflows. The
 corrected persistent-memory candidate is also installed. Its 101-test combined
 Pi suite passed, followed by a disposable restart-level save, inference, labeled
 recall, and forget acceptance test. The test left the real memory store empty.
+Turn-failure recovery commit `7161413` and the H2 audio-device ownership repair
+`a2a89dd` are installed on Pi `main`, published, and in sync with `origin/main`;
+the installed suite passes all 113 offline tests. A September 30 live session
+completed seven turns across two first-try wakes with zero input overflows and
+zero output underflows. All seven captures ended on silence. Eleven of 13
+sentence transitions were 0.00 seconds; the other two were 0.04 and 0.05
+seconds. A 21.7-second utterance was transcribed in full and ended on silence,
+closing the former 15-second cutoff check. One quiet 1.4-second phrase was
+misheard by Whisper `base`, which Luca accepts as a model limitation rather
+than capture loss. The first network-failure test permanently hung PortAudio
+after the lookahead worker aborted the main thread's output device. The retest
+on `a2a89dd` reported the speech failure, returned to sleep, woke on the first
+try, answered normally with zero overflows and underflows, and stopped cleanly.
 See [lookahead acceptance](lookahead-acceptance-20260927.md) and the
 [conversation reliability investigation](voice-investigation.md).
 
@@ -83,12 +96,13 @@ See [lookahead acceptance](lookahead-acceptance-20260927.md) and the
   running jokes stored separately from facts, and a first version focused on
   Luca. The corrected candidate is installed on the Pi.
 - Its brain/personality integration matches the current repair candidate. All
-  30 supplied memory tests pass locally, using temporary synthetic data.
+  49 installed memory tests pass locally, using temporary synthetic data.
 - The corrected September 18 working copy fixes supported preference matching,
   ambiguous deletion, joke/fact collisions, and incomplete metadata, and handles
   failed writes without claiming success. Private memory and recovery files are
-  excluded from Git. The installed combined Pi suite passes all 101 tests. The
-  guarded installer created a rollback backup before changing the working tree.
+  excluded from Git. The accepted baseline suite passed all 101 tests; after
+  turn-failure recovery, the published H2 baseline passes all 113.
+  The guarded installer created a rollback backup before changing the working tree.
   A disposable restart-level acceptance test confirmed explicit facts as
   `CONFIRMED`, narrow natural inference as `UNCONFIRMED`, labeled recall, and
   persistent explicit and inferred forgetting. The test cleaned up after itself,
@@ -114,21 +128,21 @@ See [lookahead acceptance](lookahead-acceptance-20260927.md) and the
 ## Known problems
 
 - Input loss and playback underflows occurred in the earlier candidate but were
-  absent in the latest three-turn trial with 200 ms latency. Retain that tested
-  baseline and watch for recurrence during normal use.
-- The delay before the first spoken sentence remains. Lookahead overlaps later
+  absent throughout the September 30 seven-turn session at 200 ms latency: all
+  seven captures reported zero input overflows and every reply reported zero
+  output underflows. Retain that tested baseline and watch for recurrence.
+- The delay before the first spoken sentence remains. The live session measured
+  4.9–8.5 seconds from end of speech to first playback. Lookahead overlaps later
   sentence preparation but cannot begin until the model emits a complete next
   sentence.
-- The former 15-second recording cutoff and accidental settings-command match
-  have code fixes in the Pi candidate. The settings fix worked in the live trial;
-  a clean long-utterance acceptance test is still outstanding.
 
 - The wake detector can activate on close phrases and produced several
   unexplained activations during the acknowledgment test.
 - Four of ten Pi wake-word trials had input overflows and were excluded. The
   cause has not been isolated from the audio stack.
-- Playback can leak into transcription. The acknowledgment test deliberately
-  left echo control out so this behavior would be measurable.
+- The current conversation path pauses microphone capture during playback. Echo
+  leakage remains relevant to the parked HUH experiment and any future design
+  that keeps the microphone running while TARS speaks.
 - Background noise can be classified as speech, delaying endpoint detection or
   running capture to its time limit.
 - ElevenLabs playback uses bounded one-sentence lookahead. It intentionally does
@@ -154,16 +168,12 @@ See [lookahead acceptance](lookahead-acceptance-20260927.md) and the
 
 ## Next practical actions
 
-1. Run a normal microphone-to-Claude-to-ElevenLabs conversation and monitor the
-   established diagnostics for input overflows, output underflows, and endpoint
-   timing. The lookahead trials cover live Claude and live ElevenLabs, but do not
-   cover the microphone or Whisper path.
-2. Keep the optional `tiny.en` speech-recognition comparison separate; no switch
+1. Keep the optional `tiny.en` speech-recognition comparison separate; no switch
    from `base` is established. Exercise memory naturally during normal use and
    inspect only labels and behavior unless Luca asks to inspect stored content.
-3. Build one saved engineering-checklist workflow with measurement and unit
+2. Build one saved engineering-checklist workflow with measurement and unit
    confirmation.
-4. When a better HUH performance is available, reuse the validated scheduler
+3. When a better HUH performance is available, reuse the validated scheduler
    and nonblocking PCM path, then retest echo behavior before integration.
-5. Investigate unexplained wake activations only if they remain material after
+4. Investigate unexplained wake activations only if they remain material after
    input audio is reliable.

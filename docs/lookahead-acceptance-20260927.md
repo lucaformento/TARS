@@ -14,13 +14,15 @@ detection, or Whisper.
 - At most one future sentence is prepared.
 - Playback remains ordered.
 - Worker failures reach the caller.
-- Cancellation joins the worker instead of leaving background synthesis alive.
+- Cancellation asks the worker to stop and waits for up to two seconds. A
+  blocked worker may outlive that bounded join, so shutdown is not guaranteed.
 - Piper keeps its existing path.
 
 ## Verification
 
 The targeted installed suite passed 19 tests. The full combined Pi suite passed
-101 tests after the memory installation.
+101 tests after the memory installation. After turn-failure recovery commit
+`e1086d2` was installed, the full offline Pi suite passed 109 tests.
 
 Three controlled live ElevenLabs trials each played a three-sentence response:
 
