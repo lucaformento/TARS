@@ -99,3 +99,5 @@ Roger (`CwhRBWXzGAHq8TQ4Fs17`) remains the fallback.
 
 | Date | Variant | Guidance | Saved as | Scores (1–5: depth, deadpan, machine, Luca, clarity) | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-01 | A or C (to confirm) | default | `TARS-A1` | — | 1 of 3 kept; saved description was variant C |
+| 2026-10-01 | B | default | `TARS-B1` | — | **Luca's favourite (Oct 2).** Voice ID `1LEJRs8TVTJqtqlKrZ1G`, ElevenLabs category `generated` (Voice Design, not a clone). Next: Pi audition, then switch decision |
