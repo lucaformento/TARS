@@ -2,159 +2,246 @@
   <img src="docs/assets/tars-banner.svg" alt="TARS — Built to help he who wants to explore and conquer." width="100%">
 </p>
 
-<p align="center">
-  <strong>A Raspberry Pi, a voice, and a personality you can reconfigure mid-conversation.</strong>
-</p>
-
-<p align="center">
-  <a href="#what-works-today">Features</a> ·
-  <a href="#inside-the-voice-loop">Architecture</a> ·
-  <a href="#making-him-faster">Performance</a> ·
-  <a href="#run-the-text-interface">Get started</a> ·
-  <a href="#next-on-the-bench">Roadmap</a>
-</p>
-
 # TARS
 
-I'm building a conversational robot inspired by TARS from *Interstellar*, starting with the software that makes him listen, respond, and sound like a character. The current prototype runs on a Raspberry Pi 5: wake-word detection, speech recognition, streamed replies, local speech synthesis, and adjustable personality all work together.
+A voice-driven conversational robot inspired by TARS from *Interstellar*, running
+on a Raspberry Pi 5. Wake-word detection and speech recognition run on the
+device; response generation streams from the Anthropic API; speech is
+synthesized sentence-by-sentence through ElevenLabs (or local Piper) with
+one-sentence lookahead. The robot has application-owned personality state and a
+persistent, user-correctable memory. The articulated body is the next phase.
 
-**Current stage: working voice prototype.** The articulated body, servo control, and sensors are planned. Today's engineering work is in Python, Linux, audio processing, API integration, and performance measurement.
+**Status:** working voice prototype, validated live on the Pi. 113 offline tests.
 
-## What works today
-
-- **Wake once, keep talking.** Say “Hey TARS,” then ask follow-up questions without repeating the wake word. After eight seconds without speech, TARS returns to listening for it.
-- **Speak as sentences arrive.** The voice interface starts synthesizing complete sentences from the response stream before collecting the entire reply.
-- **Keep the voice loaded.** Piper initializes once at startup and is reused throughout the session.
-- **Change his personality live.** Four application-owned dials shape the next response, with presets and conversational acknowledgments.
-- **Remember the conversation.** History survives wake/sleep cycles for the lifetime of the process.
-- **See where the time goes.** Logs expose transcription time, first text, first speech chunk, synthesis, playback, and gaps between playback calls.
-
-Wake-word detection and transcription run locally. The installed default uses local Piper speech; an [optional ElevenLabs voice engine](docs/cloud-voice.md) is available for audition and still needs Pi validation. Response generation uses the Anthropic API and requires internet access. Selecting ElevenLabs also sends generated reply text to its speech API.
-
-## Inside the voice loop
+## System overview
 
 ```mermaid
 flowchart LR
-    mic["Microphone<br/>Wake + capture"] --> stt["faster-whisper<br/>Transcribe locally"]
-    stt --> brain["TARS brain<br/>Dials + history"]
-    brain --> api["Anthropic API<br/>Stream reply text"]
-    api --> speech["Piper + aplay<br/>Speak sentences"]
-    speech -. "Flush + follow-up" .-> mic
-    style api fill:#2d241a,stroke:#c79259,color:#f3ede3
+    mic["USB mic · 16 kHz<br/>PortAudio callback<br/>bounded frame queue"] --> wake["openWakeWord<br/>custom 'Hey TARS' + VAD"]
+    wake --> cap["Endpointing<br/>RMS · pre-roll · tail pad"]
+    cap --> stt["faster-whisper base<br/>CPU INT8 · local"]
+    stt --> brain["Brain<br/>dials · memory · history"]
+    brain --> llm["Anthropic API<br/>streamed text"]
+    llm --> split["Sentence splitter"]
+    split --> worker["Lookahead worker<br/>downloads sentence N+1"]
+    worker --> play["Main thread<br/>owns output device<br/>plays sentence N"]
+    play -. "restart capture,<br/>follow-up window" .-> cap
 ```
 
-The current playback loop is synchronous: playing one sentence delays reading and synthesizing the next. Remote generation can continue while the client plays audio, subject to stream buffering. Preparing audio during playback is a next step.
+One turn:
 
-| File | Responsibility |
+1. **Wake.** The input stream runs a PortAudio callback that enqueues 80 ms
+   frames into a bounded queue (3 s). The main thread runs openWakeWord on each
+   frame (threshold 0.5, VAD-gated at 0.5, 2 s post-sleep cooldown).
+2. **Capture.** An RMS endpointer, calibrated at startup to `max(3 × ambient
+   median, 150)`, keeps 0.5 s of pre-roll, ends after 1.2 s of silence, pads a
+   0.5 s tail, rejects bursts with under 0.4 s of loud frames, and caps an
+   utterance at 30 s. Queue drops and PortAudio overflows are counted per
+   capture; a damaged capture is never transcribed — TARS asks for a repeat.
+3. **Transcribe.** Capture is **stopped** for STT, generation, and playback.
+   This prevents USB input overruns and speaker echo, at the cost of
+   interruption (see [limitations](#limitations)).
+4. **Generate.** The brain rebuilds the system prompt on every request from
+   current dial values, a bounded memory block, and an optional one-turn
+   control event, then streams text deltas.
+5. **Speak.** Deltas are split into sentences. A worker thread downloads
+   sentence N+1 as complete PCM while the main thread plays sentence N; it never
+   prepares two ahead. After the reply, capture restarts with a clean buffer and
+   an 8 s follow-up window (no wake word needed).
+
+## Design decisions
+
+**State lives in the application, not the model.** Personality dials, presets,
+memory, and conversation history are Python state. The model receives them
+fresh each request; commands are parsed locally and reach the model as a
+one-turn control event, while history keeps the user's literal words.
+
+**Full-sentence buffering before playback.** Each ElevenLabs sentence is fully
+downloaded before the device write, so network jitter can never underflow the
+output. Live data showed streaming within a sentence would gain little: across
+nine replies, the full sentence arrived on average 0.06 s after its first PCM
+byte, so time-to-first-byte dominates.
+
+**Single owner for the audio device.** Only the main thread opens, writes,
+stops, or aborts the output stream; the lookahead worker only downloads. An
+earlier version let the worker abort the device after a failed download. Under
+a deliberate 20 s HTTPS outage this blocked the main thread inside PortAudio
+`poll()` indefinitely, unkillable by Ctrl+C (confirmed with a gdb backtrace).
+Moving all device control to one thread fixed it; the same outage test now
+recovers cleanly.
+
+**Fail the turn, not the process.** Any error inside a turn — Anthropic
+timeout or overload, ElevenLabs failure, PortAudio playback error, Whisper
+failure — ends that turn, prints a one-line reason, and returns to wake-word
+listening with capture restarted. The one fatal condition is a microphone
+stream that cannot restart, because continuing would leave TARS deaf.
+
+**History stays well-formed under failure.** A request that fails before any
+text removes its orphaned user turn; an interrupted reply is kept as a
+complete user/assistant pair. History is capped at 24 messages and pruned in
+pairs.
+
+## Memory
+
+A single human-readable JSON file (`memory.json`, git-ignored), designed so a
+guess can never silently become a fact.
+
+| Source | How it is created | Prompt label |
+| :--- | :--- | :--- |
+| Explicit | "remember that I prefer PETG", "remember I work nights" | `CONFIRMED` |
+| Inferred | Narrow first-person patterns ("I like…", "I'm working on…", "my X is…"); questions are never mined | `UNCONFIRMED` |
+| Running joke | "remember that" right after a TARS line | `RUNNING JOKE` |
+
+- **Retrieval is bounded:** confirmed before inferred, newest first, at most 20
+  entries and 1,200 characters; entries are capped at 240 characters and the
+  store at 500 (oldest inferred entries are evicted first, explicit ones never).
+- **Corrections:** "forget that I like PETG" deletes one unambiguous match;
+  ambiguous requests delete nothing and ask for specifics. Re-stating an
+  inferred entry upgrades it to `CONFIRMED`.
+- **Durability:** writes go to a temp file, `fsync`, then atomic `os.replace`.
+  A failed write leaves memory and disk unchanged, and TARS is told not to claim
+  success. An unparsable file is quarantined, never overwritten; an unreadable
+  one disables writes.
+- **Prompt hygiene:** memory text is framed as data, not instructions, and
+  whitespace is collapsed so an entry cannot forge additional lines.
+- Whisper often transcribes the wake phrase; one leading "Hey TARS" is stripped
+  before command parsing.
+
+## Personality
+
+Four dials (0–100) are injected as style guidance, never recited unless asked:
+humor (75), sarcasm (60), honesty (90), intellect (50). Commands are parsed
+locally from text or speech, including spoken numbers: `set humor to ninety`,
+`buddy mode`, `know-it-all`, `what are your settings`, `reset`. Presets,
+resets, and setting queries must be the whole utterance, and dial changes need
+an explicit "set/change/turn … to N" form, so ordinary speech that merely
+mentions "settings" or "humor" does not trigger a control event.
+
+## Measured performance
+
+Live session on the Pi (September 30, 2026; ElevenLabs, `claude-sonnet-4-6`):
+
+| Metric | Result |
 | :--- | :--- |
-| [`personality.py`](personality.py) | Pure command parsing, presets, and prompt construction. |
-| [`brain.py`](brain.py) | Owns personality state, conversation history, and API streaming. |
-| [`tars.py`](tars.py) | Terminal interface; collects streamed text into a complete reply. |
-| [`tars_voice.py`](tars_voice.py) | Audio capture, wake/follow-up loop, sentence splitting, synthesis, playback, and timing. |
-| [`cloud_speech.py`](cloud_speech.py) | Optional ElevenLabs voice setup, auditions, and streamed PCM playback. |
+| Turns / wakes | 7 turns across 2 wakes; both wakes on the first attempt |
+| Input overflows / output underflows | 0 / 0 |
+| Gap between spoken sentences | 11 of 13 at 0.00 s; max 0.05 s |
+| Long utterance | 21.7 s clip transcribed in full, ended on silence |
+| End of speech → first playback request | 4.9–8.5 s |
+| Network-outage recovery (20 s HTTPS block mid-reply) | reported, slept, woke and answered normally, clean exit |
 
-Three decisions shape the implementation:
+First-response latency breakdown: ~1.2 s endpoint silence, 1.6–4.5 s Whisper
+(fit: **1.40 s fixed + 0.14 s per second of audio** — the fixed part is the
+encoder's padded 30 s window), ~1.3 s to Claude's first complete sentence, and
+1.2–1.5 s ElevenLabs time-to-first-byte. The reduction plan, ranked by expected
+savings and risk, is in [docs/latency-proposal.md](docs/latency-proposal.md).
 
-**State lives in Python.** The model receives the current dial values on every request. Configuration changes are parsed by the application.
+Earlier, keeping the Piper voice resident instead of spawning it per reply cut
+synthesis from ~2.1 s to 0.05 s for a short line
+([performance notes](docs/performance.md)).
 
-**Commands and conversation take separate paths.** Command events enter the system prompt, while history preserves the user's actual words.
+## Privacy boundaries
 
-**Each interface owns its presentation.** The brain yields text deltas. The voice interface splits and sanitizes them for speech; the terminal interface joins them for display.
+- **Microphone audio never leaves the Pi.** Wake detection and STT are local.
+- The transcript, dials, and the bounded memory block go to Anthropic.
+- Only generated reply text (plus up to 500 characters of same-reply context)
+  goes to ElevenLabs. The API key is never forwarded on redirects, and errors
+  are sanitized before display.
+- Opt-in capture diagnostics (`--capture-diagnostics`) refuse any path inside
+  the repository and write WAV/JSON files with `0700`/`0600` permissions.
 
-## Personality, with actual state
+## Hardware and stack
 
-| Dial | Baseline | Controls |
-| :--- | ---: | :--- |
-| Humor | 75 | Seriousness versus playfulness |
-| Sarcasm | 60 | Sincerity versus dry edge |
-| Honesty | 90 | Diplomatic versus blunt phrasing |
-| Intellect | 50 | Vocabulary and register |
-
-All dials range from 0 to 100. These are style controls, not guarantees of factual accuracy or changes to the model's underlying capabilities.
-
-Try these in the text interface:
-
-```text
-set humor to 90
-buddy mode
-know-it-all
-what are your settings?
-reset
-```
-
-The same parser handles transcribed speech. Spoken number words and variations such as “know it all” still need better normalization. Voice delivery, including the occasional flat “Huh,” is being tuned.
-
-## Making him faster
-
-The first major win came from changing the lifetime of a resource: the old speech path launched Piper and loaded the voice model for every reply. Reusing a loaded `PiperVoice` removed about **two seconds per call** in a paired benchmark on the Pi 5.
-
-| Input | Fresh Piper process | Loaded voice reused | Time saved |
-| :--- | ---: | ---: | ---: |
-| Short: “Test.” | 2.107 s | **0.051 s** | 2.056 s · **97.6%** |
-| Paragraph producing about 10 s of audio | 3.234 s | **1.133 s** | 2.101 s · **65.0%** |
-
-These are median **WAV-generation times**, with four measured trials per input and method, warm-ups excluded, and execution order alternated. They do not measure complete conversational latency.
-
-In the first live streaming session, the estimated interval from detected speech end to the first playback request was **4.54–9.52 seconds across four turns**. Two turns were below five seconds; transcription and response-stream delays still caused longer waits. The metric excludes playback startup and is not a measurement of the first audible sound.
-
-See the [current project state](docs/project-state.md), [performance notes](docs/performance.md), and [wake-word decision](docs/wake-word.md) for settled decisions, measurements, boundaries, and remaining questions.
-
-## On the bench
-
-| Layer | Current implementation |
+| Layer | Implementation |
 | :--- | :--- |
-| Computer | Raspberry Pi 5, 8 GB, active cooling |
-| Operating environment | Debian 13, 64-bit ARM; Python 3.13; headless over SSH |
-| Audio | USB microphone/audio interface and speaker; PortAudio capture and ALSA playback |
-| Wake word | openWakeWord 0.4.0, custom “Hey TARS” ONNX model with voice-activity gating |
-| Transcription | faster-whisper `base`, CPU, INT8 |
-| Response generation | `claude-sonnet-4-6`, Anthropic SDK 0.111.0 |
-| Speech synthesis | Piper 1.8.0, community TARS voice using its neutral speaker, loaded once |
+| Compute | Raspberry Pi 5, 8 GB, active cooling; Debian 13 (aarch64); Python 3.13 |
+| Audio | USB microphone (matched by device name) and speaker; PortAudio via `sounddevice`, 200 ms latency both directions |
+| Wake word | openWakeWord 0.4.0, custom "Hey TARS" ONNX model; 9/9 detections in clean Pi trials |
+| STT | faster-whisper 1.2.1, `base`, CPU INT8, English |
+| LLM | Anthropic SDK 0.111.0; default `claude-sonnet-4-6`; 20 s timeout, 1 retry; 160 output tokens for voice |
+| TTS | ElevenLabs `eleven_multilingual_v2`, 24 kHz s16le PCM; Piper 1.8.0 as the local fallback |
 
-## Run the text interface
+## Repository layout
 
-The text interface lets you explore the personality system without audio hardware. You need Python and an Anthropic API key with API access.
+| Path | Responsibility |
+| :--- | :--- |
+| [`tars_voice.py`](tars_voice.py) | Voice front end: capture, endpointing, wake/follow-up loop, sentence lookahead, recovery, diagnostics |
+| [`cloud_speech.py`](cloud_speech.py) | ElevenLabs client: bounded PCM download, playback, cancellation; voice list/audition/configure CLI |
+| [`brain.py`](brain.py) | Request construction, streaming, history consistency, model selection |
+| [`memory.py`](memory.py) | Memory store, command parsing, inference, bounded retrieval |
+| [`personality.py`](personality.py) | Pure prompt building and dial/preset command parsing |
+| [`tars.py`](tars.py) | Terminal front end for the same brain |
+| [`tests/`](tests) | 113 offline tests with fake devices, network, and models |
+| [`docs/`](docs) | Decision record, measurements, and design notes |
+
+## Running it
+
+Developed on Python 3.13; requires an Anthropic API key. The terminal
+interface needs no audio hardware:
 
 ```bash
-git clone https://github.com/lucaformento/TARS.git
-cd TARS
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install "anthropic==0.111.0" python-dotenv
+git clone https://github.com/lucaformento/TARS.git && cd TARS
+python3 -m venv venv && source venv/bin/activate
+pip install anthropic==0.111.0 python-dotenv
+echo "ANTHROPIC_API_KEY=..." > .env
+python tars.py                      # optional: --brain-model claude-sonnet-5
 ```
 
-Create a `.env` file in the project root:
-
-```dotenv
-ANTHROPIC_API_KEY=your_key_here
-```
-
-Then run:
+The voice front end additionally needs `numpy`, `sounddevice` (with PortAudio),
+`faster-whisper`, `openwakeword==0.4.0`, `piper-tts`, and locally provisioned
+models (not distributed; see [voice setup](docs/voice-setup.md)). For
+ElevenLabs, configure a key and voice with `python cloud_speech.py configure
+--voice-id VOICE_ID --save` ([cloud voice](docs/cloud-voice.md)).
 
 ```bash
-python tars.py
+python tars_voice.py --tts elevenlabs                # converse
+python tars_voice.py --tts elevenlabs --diagnostics  # per-turn timing, overflow, underflow report
+python cloud_speech.py audition --voice-id VOICE_ID  # one paid sample
 ```
 
-Type `quit` to exit. `.env` is excluded from version control. The current character prompt addresses its builder, Luca; customize it in `personality.py` for your own build.
+| Variable | Purpose |
+| :--- | :--- |
+| `ANTHROPIC_API_KEY` | Required |
+| `ANTHROPIC_MODEL` | Optional; one of `claude-sonnet-4-6`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Required for `--tts elevenlabs` |
+| `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2` (default) or `eleven_flash_v2_5` |
 
-**For the microphone and speaker:** follow the [voice setup notes](docs/voice-setup.md). Model files and audio configuration are provisioned separately; a fresh clone is not yet a one-command hardware setup.
+Tests (no network, audio device, or API key needed):
 
-## Next on the bench
+```bash
+python -m unittest discover -s tests
+```
 
-- [x] Shared brain with text and voice interfaces
-- [x] Personality dials and session history
-- [x] Wake word and follow-up conversation loop
-- [x] Resident Piper voice and sentence streaming
-- [x] Timing instrumentation and paired synthesis benchmark
-- [ ] Measure first-transcription overhead and compare STT options
-- [ ] Smooth sentence transitions and tune vocal delivery
-- [ ] Improve spoken-command parsing and failure recovery
-- [ ] Package repeatable voice setup and add a demo recording
-- [x] Add a custom “Hey TARS” wake word
-- [ ] Package a repeatable startup service
-- [ ] Build the articulated body, servo control, and sensors
+## Limitations
 
-The prototype currently waits until playback finishes before listening again. The custom wake word can occasionally respond to near phrases such as “hey stars” or “hey cars”; that tradeoff is documented and accepted for the current build. Background noise can interfere with speech detection, and history resets when the process stops. Those constraints guide the next round of work.
+- **First-response latency (4.9–8.5 s)** is the main open problem; see the
+  latency plan above.
+- **No barge-in.** Capture is paused while TARS thinks and speaks. Interruption
+  and a wake acknowledgment both need continuous capture with speaker-echo
+  control.
+- The wake word accepts some near phrases ("hey stars"); this was a deliberate
+  trade-off for recall.
+- Whisper `base` can mishear short, quiet phrases.
+- A bare "forget that" removes the most recently updated memory; a version
+  scoped to the current session is in review.
+- Conversation history is process-local; only memory persists across restarts.
+- Model and device paths are configured for this Pi; a portable install script
+  and lockfile do not exist yet.
+- The voice is a stock ElevenLabs voice for now. The replacement is being
+  created with text-prompted voice design — a new synthetic voice, not a clone
+  of any real person.
+
+## Roadmap
+
+- [x] Wake word, follow-up loop, and streamed sentence speech
+- [x] One-sentence lookahead with zero-gap transitions
+- [x] Persistent memory with confirmed/inferred provenance
+- [x] Turn-level failure recovery, verified under a live network outage
+- [ ] First-response latency: same-clip `tiny.en` vs. beam-size benchmark, endpoint tuning, Flash TTS for sentence one
+- [ ] Designed TARS-style voice and optional "machine body" output filter
+- [ ] Model-judged memory: let the model decide what is worth keeping
+- [ ] Continuous capture with echo control for barge-in
+- [ ] Articulated, 3D-printed body with servo control
 
 ---
 
