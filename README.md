@@ -19,7 +19,7 @@ persistent, user-correctable memory. The articulated body is the next phase.
 flowchart LR
     mic["USB mic · 16 kHz<br/>PortAudio callback<br/>bounded frame queue"] --> wake["openWakeWord<br/>custom 'Hey TARS' + VAD"]
     wake --> cap["Endpointing<br/>RMS · pre-roll · tail pad"]
-    cap --> stt["faster-whisper base<br/>CPU INT8 · local"]
+    cap --> stt["faster-whisper tiny.en<br/>CPU INT8 · local"]
     stt --> brain["Brain<br/>dials · memory · history"]
     brain --> llm["Anthropic API<br/>streamed text"]
     llm --> split["Sentence splitter"]
@@ -139,6 +139,10 @@ encoder's padded 30 s window), ~1.3 s to Claude's first complete sentence, and
 1.2–1.5 s ElevenLabs time-to-first-byte. The reduction plan, ranked by expected
 savings and risk, is in [docs/latency-proposal.md](docs/latency-proposal.md).
 
+Those figures were measured with `base` at beam 5. On the same 11 recorded
+clips, `tiny.en` with beam 1 produced the same transcripts at a median 0.88 s
+decode (max 1.53 s) against 1.87 s (max 4.07 s), so it is now the default.
+
 Earlier, keeping the Piper voice resident instead of spawning it per reply cut
 synthesis from ~2.1 s to 0.05 s for a short line
 ([performance notes](docs/performance.md)).
@@ -160,7 +164,7 @@ synthesis from ~2.1 s to 0.05 s for a short line
 | Compute | Raspberry Pi 5, 8 GB, active cooling; Debian 13 (aarch64); Python 3.13 |
 | Audio | USB microphone (matched by device name) and speaker; PortAudio via `sounddevice`, 200 ms latency both directions |
 | Wake word | openWakeWord 0.4.0, custom "Hey TARS" ONNX model; 9/9 detections in clean Pi trials |
-| STT | faster-whisper 1.2.1, `base`, CPU INT8, English |
+| STT | faster-whisper 1.2.1, `tiny.en`, beam 1, CPU INT8 |
 | LLM | Anthropic SDK 0.111.0; default `claude-sonnet-4-6`; 20 s timeout, 1 retry; 160 output tokens for voice |
 | TTS | ElevenLabs `eleven_multilingual_v2` with a designed synthetic voice (not a clone), speed 0.92, 85% volume; 24 kHz s16le PCM; Piper 1.8.0 as the local fallback |
 
@@ -209,6 +213,7 @@ python cloud_speech.py audition --voice-id VOICE_ID  # one paid sample
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Required for `--tts elevenlabs` |
 | `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2` (default) or `eleven_flash_v2_5` |
 | `ELEVENLABS_SPEED`, `TARS_VOLUME` | Delivery overrides; defaults `0.92` (8% slower) and `0.85` (15% quieter) |
+| `TARS_STT_MODEL`, `TARS_STT_BEAM` | Speech recognition; defaults `tiny.en` and `1`; `base` and `5` restore the earlier setting |
 
 Tests (no network, audio device, or API key needed):
 
@@ -225,7 +230,7 @@ python -m unittest discover -s tests
   control.
 - The wake word accepts some near phrases ("hey stars"); this was a deliberate
   trade-off for recall.
-- Whisper `base` can mishear short, quiet phrases.
+- Whisper can mishear short, quiet phrases and some words ("servo" as "server").
 - Memory commands must be the whole utterance, and Whisper sometimes hears
   "forget them." When nothing parses, the model can still claim it saved or
   deleted something; a guard that tells it nothing changed is in review.
@@ -239,7 +244,8 @@ python -m unittest discover -s tests
 - [x] One-sentence lookahead with zero-gap transitions
 - [x] Persistent memory with confirmed/inferred provenance
 - [x] Turn-level failure recovery, verified under a live network outage
-- [ ] First-response latency: same-clip `tiny.en` vs. beam-size benchmark, endpoint tuning, Flash TTS for sentence one
+- [x] Same-clip speech-recognition benchmark; `tiny.en` at beam 1 adopted
+- [ ] First-response latency: endpoint tuning, Flash TTS for sentence one
 - [x] Designed TARS-style voice, tuned by ear on the Pi speaker
 - [ ] Optional "machine body" output filter
 - [ ] Model-judged memory: let the model decide what is worth keeping

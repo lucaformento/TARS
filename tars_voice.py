@@ -35,7 +35,13 @@ VOICE = "/home/lucadev/TARS/voices/tars-community/TARS.onnx"
 VOICE_CONFIG = "/home/lucadev/TARS/voices/tars-community/TARS.onnx.json"
 MIC_NAME = "USB PnP"
 
-STT_MODEL = "base"        # swap to "tiny.en" for ~3x speed, some accuracy loss
+# The October 5 same-clip benchmark: tiny.en with greedy decoding matched
+# base/beam 5 on all 11 clips at about half the decode time. TARS_STT_MODEL and
+# TARS_STT_BEAM switch back (for example base and 5) without a code change.
+STT_MODEL = "tiny.en"
+STT_BEAM = 1
+STT_MODELS = ("tiny.en", "tiny", "base.en", "base")
+STT_BEAMS = range(1, 6)
 
 SR = 16000
 FRAME = 1280              # 80ms, the size openWakeWord expects
@@ -269,10 +275,26 @@ def record_utterance(input_reader, threshold, wait):
     )
 
 
-def warm_stt(stt):
+def stt_settings():
+    """Return (model, beam) from the environment, falling back to the defaults."""
+    model = os.environ.get("TARS_STT_MODEL", "").strip() or STT_MODEL
+    if model not in STT_MODELS:
+        raise ValueError(f"TARS_STT_MODEL must be one of: {', '.join(STT_MODELS)}.")
+    raw_beam = os.environ.get("TARS_STT_BEAM", "").strip() or str(STT_BEAM)
+    try:
+        beam = int(raw_beam)
+    except ValueError:
+        beam = None
+    if beam not in STT_BEAMS:
+        raise ValueError(f"TARS_STT_BEAM must be a whole number from {STT_BEAMS.start} "
+                         f"to {STT_BEAMS.stop - 1}.")
+    return model, beam
+
+
+def warm_stt(stt, beam=STT_BEAM):
     """Run and fully consume one silent transcription before live speech."""
     silence = np.zeros(SR // 2, dtype=np.float32)
-    segments, _ = stt.transcribe(silence, language="en")
+    segments, _ = stt.transcribe(silence, language="en", beam_size=beam)
     for _ in segments:
         pass
 
@@ -352,7 +374,8 @@ def prepare_diagnostic_directory(value):
 
 
 def save_capture_diagnostics(directory, turn, capture, threshold, transcript,
-                             stt_seconds, stt_info, segments, total_overflows):
+                             stt_seconds, stt_info, segments, total_overflows,
+                             stt_model=STT_MODEL, stt_beam=STT_BEAM):
     """Save only microphone/STT evidence explicitly requested by the operator."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     stem = f"turn-{turn:03d}-{stamp}"
@@ -385,7 +408,8 @@ def save_capture_diagnostics(directory, turn, capture, threshold, transcript,
         },
         "input_overflows_this_capture": capture.input_overflows,
         "input_overflows_total": total_overflows,
-        "stt_model": STT_MODEL,
+        "stt_model": stt_model,
+        "stt_beam": stt_beam,
         "stt_seconds": round(stt_seconds, 4),
         "transcript": transcript,
         "stt_info": {
@@ -718,9 +742,14 @@ def main():
         parser.error("--capture-diagnostics requires a microphone conversation, not --test-name")
     if args.tts != "elevenlabs" and (args.elevenlabs_model or args.name_alias is not None):
         parser.error("--elevenlabs-model and --name-alias require --tts elevenlabs")
+    # Speech settings may live in .env, so read it before choosing the model.
+    load_environment()
+    try:
+        stt_model, stt_beam = stt_settings()
+    except ValueError as exc:
+        parser.error(str(exc))
     with ExitStack() as cleanup:
         if args.tts == "elevenlabs":
-            load_environment()
             voice = ElevenLabsVoice(model_id=args.elevenlabs_model, name_alias=args.name_alias)
             cleanup.callback(voice.close)
         else:
@@ -735,10 +764,12 @@ def main():
                               if args.capture_diagnostics else None)
         except ValueError as exc:
             parser.error(str(exc))
-        run_conversation(voice, args.diagnostics, diagnostic_dir, args.brain_model)
+        run_conversation(voice, args.diagnostics, diagnostic_dir, args.brain_model,
+                         stt_model, stt_beam)
 
 
-def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=None):
+def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=None,
+                     stt_model=STT_MODEL, stt_beam=STT_BEAM):
     import openwakeword
     from faster_whisper import WhisperModel
     from brain import TARS
@@ -758,12 +789,12 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
         embedding_onnx_model_path=EMBEDDING_MODEL,
         vad_threshold=WAKE_VAD_THRESHOLD,
     )
-    stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+    stt = WhisperModel(stt_model, device="cpu", compute_type="int8")
     tars = TARS(model=brain_model, voice=True)  # short, speech-shaped replies
 
     print("Warming speech recognition...")
     warm_started = time.perf_counter()
-    warm_stt(stt)
+    warm_stt(stt, stt_beam)
     warm_seconds = time.perf_counter() - warm_started
     if diagnostics:
         print(f"Speech recognition ready ({warm_seconds:.1f}s startup warm-up).")
@@ -785,7 +816,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
 
         print("Calibrating room noise, stay quiet...")
         threshold = calibrate(input_reader)
-        print(f"Threshold: {threshold:.0f}  |  STT: {STT_MODEL}")
+        print(f"Threshold: {threshold:.0f}  |  STT: {stt_model}, beam {stt_beam}")
         print("Say 'hey tars' to start. Ctrl+C to stop.\n")
 
         wake_ready_at = 0.0
@@ -843,7 +874,8 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                     # clean buffer and prevents known USB input overruns.
                     with paused_input(buffered_input):
                         t0 = time.perf_counter()
-                        segment_iter, stt_info = stt.transcribe(capture.clip, language="en")
+                        segment_iter, stt_info = stt.transcribe(capture.clip, language="en",
+                                                                beam_size=stt_beam)
                         segments = list(segment_iter)
                         heard = " ".join(segment.text for segment in segments).strip()
                         stt_s = time.perf_counter() - t0
@@ -852,6 +884,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                             save_capture_diagnostics(
                                 diagnostic_dir, turn, capture, threshold, heard,
                                 stt_s, stt_info, segments, input_reader.stats.overflows,
+                                stt_model, stt_beam,
                             )
 
                         if heard:
