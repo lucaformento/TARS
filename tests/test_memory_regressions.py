@@ -1,12 +1,14 @@
 """Regression cases from the memory candidate review; all stores are temporary."""
 
 import json
+import importlib.util
 from datetime import datetime as real_datetime
 from pathlib import Path
 import sys
+from types import ModuleType, SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,7 +58,8 @@ class MemoryRegressionTests(unittest.TestCase):
     def test_forget_cannot_delete_another_object_using_a_shared_verb(self):
         handle_memory_turn(self.store, "remember that I prefer PLA")
         note = handle_memory_turn(self.store, "forget that I prefer PETG")
-        self.assertIn("do not have", note)
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn("did not match a stored memory", note)
         self.assertEqual(self.store.all()[0]["text"], "I prefer PLA")
 
     def test_ambiguous_reference_changes_neither_memory_nor_disk(self):
@@ -220,7 +223,9 @@ class MemoryRegressionTests(unittest.TestCase):
         before_disk = self.path.read_bytes()
         for phrase in ("forget it", "okay, forget it", "never mind, forget it"):
             with self.subTest(phrase=phrase):
-                self.assertIsNone(handle_memory_turn(self.store, phrase))
+                note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved or deleted", note)
+                self.assertIn("Do not claim", note)
                 self.assertEqual(self.store.all(), before_entries)
                 self.assertEqual(self.path.read_bytes(), before_disk)
 
@@ -285,6 +290,162 @@ class MemoryRegressionTests(unittest.TestCase):
         note = handle_memory_turn(reopened, "forget this")
         self.assertEqual(reopened.all(), [])
         self.assertIn('"I prefer PETG"', note)
+
+    def test_live_turn_four_fillers_delete_only_latest_this_run_and_quote_it(self):
+        self.store.add("I work nights", source="stated")
+        current_run = MemoryStore(self.path)
+        current_run.add("my test word is pineapple", source="stated")
+        note = handle_memory_turn(current_run, "Yeah, just forget that")
+        self.assertEqual([entry["text"] for entry in current_run.all()], ["I work nights"])
+        self.assertIn('"my test word is pineapple"', note)
+        self.assertIn("was deleted", note)
+        self.assertEqual(MemoryStore(self.path).all(), current_run.all())
+
+    def test_live_turn_four_fillers_never_delete_a_previous_run_entry(self):
+        self.store.add("I work nights", source="stated")
+        reopened = MemoryStore(self.path)
+        before = self.path.read_bytes()
+        note = handle_memory_turn(reopened, "Yeah, just forget that")
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn('"forget that I work nights"', note)
+        self.assertEqual(len(reopened.all()), 1)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_live_turn_five_forget_it_is_honest_even_after_a_real_deletion(self):
+        self.store.add("my test word is pineapple", source="stated")
+        handle_memory_turn(self.store, "Yeah, just forget that")
+        before = self.path.read_bytes()
+        note = handle_memory_turn(self.store, "Yeah, just forget it")
+        self.assertIn("Nothing was saved or deleted this turn", note)
+        self.assertIn('Do not claim "got it", "forgotten", "already done"', note)
+        self.assertEqual(self.store.all(), [])
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_forget_them_mishears_never_delete_even_an_exact_matching_entry(self):
+        self.store.add("my test word is pineapple", source="stated")
+        # The old broad parser could even remove this literal target. Neither
+        # silently correcting "them" nor treating it as part of a target is safe.
+        self.store.add("them my test word is pineapple", source="stated")
+        before_entries = self.store.all()
+        before = self.path.read_bytes()
+        for phrase in ("forget them my test word is pineapple",
+                       "Yeah, just forget them my test word is pineapple",
+                       "forget them", "forget them all"):
+            with self.subTest(phrase=phrase):
+                note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved or deleted this turn", note)
+                self.assertIn('"forget them" is not a supported deletion command', note)
+                self.assertIn('"forget that <exact memory text>"', note)
+                self.assertEqual(self.store.all(), before_entries)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_parsed_unmatched_target_has_honest_retry_note_and_does_not_write(self):
+        self.store.add("my test word is pineapple", source="stated")
+        before = self.path.read_bytes()
+        note = handle_memory_turn(self.store, "forget that my test word is papaya")
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn("did not match a stored memory", note)
+        self.assertIn("Do not claim", note)
+        self.assertIn("previously removed", note)
+        self.assertIn('"forget that <exact memory text>"', note)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_guarded_requests_skip_all_inference_in_the_same_turn(self):
+        self.store.add("I work nights", source="stated")
+        before = self.path.read_bytes()
+        for phrase in ("I like PETG. Could you remember that?",
+                       "Yeah, just forget it. I prefer PLA",
+                       "I prefer PLA. Forget them my test word is pineapple"):
+            with self.subTest(phrase=phrase):
+                with patch("memory.infer_memories", side_effect=AssertionError("must not infer")):
+                    note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved or deleted this turn", note)
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(len(self.store.all()), 1)
+
+    def test_guarded_requests_without_a_store_file_do_not_create_one(self):
+        for phrase in ("Yeah, just forget it", "do you remember the movie",
+                       "forget them my test word is pineapple"):
+            self.assertIn("Nothing was saved or deleted", handle_memory_turn(self.store, phrase))
+            self.assertFalse(self.path.exists())
+
+    def test_unparsed_remember_request_gives_statement_retry_without_saving(self):
+        note = handle_memory_turn(self.store, "I'd like you to remember I prefer PETG")
+        self.assertIn("Nothing was saved or deleted", note)
+        self.assertIn('"remember that <fact>" as a statement', note)
+        self.assertFalse(self.path.exists())
+        note = handle_memory_turn(self.store, "Yeah, just remember that I prefer PETG")
+        self.assertIn("Luca asked you to remember", note)
+        self.assertEqual(self.store.all()[0]["text"], "I prefer PETG")
+        self.assertEqual(self.store.all()[0]["source"], "stated")
+
+    def test_filler_questions_and_reminiscences_stay_unsaved_with_retry_note(self):
+        for phrase in ("Yeah, just remember that I prefer PETG?",
+                       "Actually, remember when we fixed the servo",
+                       "Um, remember the time we fixed the servo"):
+            with self.subTest(phrase=phrase):
+                note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved", note)
+                self.assertIn("Do not claim you remembered it", note)
+                self.assertIn('"remember that <fact>"', note)
+                self.assertFalse(self.path.exists())
+
+    def test_fillers_do_not_delete_for_quoted_reported_or_conditional_requests(self):
+        self.store.add("my test word is pineapple", source="stated")
+        before = self.path.read_bytes()
+        for phrase in ('"Yeah, just forget that"', 'Yeah, my friend said "forget that"',
+                       "Actually, if I say forget that, will you delete it",
+                       "Yes, I might forget that", "I said yeah just forget that"):
+            with self.subTest(phrase=phrase):
+                self.assertIn("Nothing was saved or deleted", handle_memory_turn(self.store, phrase))
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(len(self.store.all()), 1)
+
+    def test_memory_word_boundaries_preserve_ordinary_inference(self):
+        self.assertIsNone(handle_memory_turn(self.store, "I like forgetful robots"))
+        self.assertEqual(self.store.all()[0]["text"], "likes forgetful robots")
+        self.assertEqual(self.store.all()[0]["source"], "inferred")
+
+    def test_filler_specific_forget_and_inferred_upgrade_still_work(self):
+        self.store.add("likes PETG", kind="preference", source="inferred")
+        reopened = MemoryStore(self.path)
+        handle_memory_turn(reopened, "Yes, actually remember that I prefer PETG")
+        note = handle_memory_turn(reopened, "So, just forget this")
+        self.assertIn('"I prefer PETG"', note)
+        self.assertEqual(reopened.all(), [])
+        handle_memory_turn(reopened, "Um, remember that I work nights")
+        note = handle_memory_turn(reopened, "Actually, forget that I work nights")
+        self.assertIn("It is deleted", note)
+        self.assertEqual(reopened.all(), [])
+
+    def test_honesty_notes_reach_real_brain_request_without_paid_calls(self):
+        # Load a private module instance with fake SDK/dotenv so this test
+        # neither reads .env nor interferes with tests/test_brain.py's module.
+        anthropic = ModuleType("anthropic")
+        anthropic.Anthropic = MagicMock()
+        dotenv = ModuleType("dotenv")
+        dotenv.load_dotenv = MagicMock()
+        spec = importlib.util.spec_from_file_location(
+            "honesty_test_brain", Path(__file__).resolve().parents[1] / "brain.py")
+        brain = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"anthropic": anthropic, "dotenv": dotenv}):
+            spec.loader.exec_module(brain)
+        self.store.add("my test word is pineapple", source="stated")
+        before = self.path.read_bytes()
+        for phrase in ("Yeah, just forget it", "forget them my test word is pineapple",
+                       "forget that my test word is papaya"):
+            with self.subTest(phrase=phrase):
+                stream = MagicMock()
+                stream.__enter__.return_value.text_stream = iter(["Please rephrase."])
+                messages = SimpleNamespace(stream=MagicMock(return_value=stream))
+                tars = brain.TARS(client=SimpleNamespace(messages=messages), memory=self.store)
+                tars.respond(phrase)
+                prompt = messages.stream.call_args.kwargs["system"]
+                self.assertIn("CONTROL EVENT", prompt)
+                self.assertIn("deleted", prompt)
+                self.assertIn("Do not claim", prompt)
+                self.assertIn('"forget that <exact memory text>"', prompt)
+                self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

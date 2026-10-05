@@ -97,7 +97,12 @@ def _timestamp(value, fallback):
 # Pure command parsing
 # --------------------------------------------------------------------------
 
-_LEAD = r"(?:can you |could you |please |hey |ok |okay )*"
+# Only leading, delimited words are fillers; never search inside a report,
+# quotation or conditional, and never strip these words from the payload.
+_LEAD_WORDS = r"can you|could you|please|hey|ok|okay|yeah|yes|just|so|um|actually"
+_LEAD = rf"(?:(?:{_LEAD_WORDS})(?:\s*[,;:]\s*|\s+))*"
+_LEADING_WORDS = re.compile(rf"^{_LEAD}", re.IGNORECASE)
+_MEMORY_WORD = re.compile(r"\b(?:remember|forget)\b", re.IGNORECASE)
 
 # "remember that I prefer PETG" / "remember I work nights"
 _REMEMBER_WITH_OBJECT = re.compile(
@@ -119,10 +124,12 @@ _FORGET = re.compile(
 )
 _FORGET_BARE = re.compile(rf"^{_LEAD}forget\s+(?:that|this)$", re.IGNORECASE)
 _FORGET_IT = re.compile(
-    r"^(?:(?:can you|could you|please|hey|ok|okay|never mind)"
-    r"\s*[,;:]?\s*)*forget\s+it$",
+    rf"^(?:(?:{_LEAD_WORDS}|never mind)(?:\s*[,;:]\s*|\s+))*forget\s+it$",
     re.IGNORECASE,
 )
+# "Them" is an ambiguous transcription, not an alias for "that" or a bulk
+# deletion command. "Forget that <exact text>" can still target any wording.
+_FORGET_UNSUPPORTED = re.compile(rf"^{_LEAD}forget\s+(?:it|them)\b", re.IGNORECASE)
 _RECALL = re.compile(
     rf"^{_LEAD}(?:what do you remember(?:\s+about me)?|what do you know about me|"
     rf"list your memories|what have you remembered)$",
@@ -139,11 +146,14 @@ def parse_memory_command(text):
     Pure: no I/O, no state.
     """
     command = _strip_address(text)
+    # A transcribed name may follow the fillers: "yeah, TARS, just forget
+    # that". Remove one leading address, never a name inside the memory text.
+    command = _strip_address(_LEADING_WORDS.sub("", command, count=1))
     if not command:
         return None
     if _RECALL.match(command):
         return ("recall", None)
-    if _FORGET_IT.fullmatch(command):
+    if _FORGET_IT.fullmatch(command) or _FORGET_UNSUPPORTED.match(command):
         return None
     if (_REMEMBER_REQUEST.match(command)
             and ((text or "").rstrip().endswith("?")
@@ -160,6 +170,16 @@ def parse_memory_command(text):
     if match:
         return ("forget", _normalize(match.group("text")))
     return None
+
+
+def is_memory_request(text):
+    """Classify parsed commands and guarded attempts, including no-ops.
+
+    This does not authorize a mutation. The note-taker integration must use
+    this broader classification to skip quiet notes and invalidate pending
+    jobs even when parse_memory_command returns None.
+    """
+    return bool(_MEMORY_WORD.search(text or "") or parse_memory_command(text))
 
 
 # --------------------------------------------------------------------------
@@ -513,7 +533,8 @@ def handle_memory_turn(store, user_input, last_reply=None):
         if intent == "remember_rejected":
             return ("Nothing was saved. Luca's wording was a question or reminiscence, "
                     "not a memory command. Do not claim you remembered it; answer him "
-                    "normally.")
+                    'normally. Nothing was deleted. For an intended save, suggest '
+                    '"remember that <fact>" as a statement, not a question.')
         if intent == "remember":
             entry = store.add(payload, kind="fact", source="stated")
             if entry is None:
@@ -540,7 +561,11 @@ def handle_memory_turn(store, user_input, last_reply=None):
                 return ("The memory was deleted. Deleted memory text: "
                         f"\"{entry['text']}\". Tell Luca exactly what you forgot.")
             if payload is not None:
-                return "Luca asked you to forget something you do not have. Say so plainly."
+                return ("Nothing was deleted. The request did not match a stored memory. "
+                        'Do not claim "forgotten", "already done", or that it was '
+                        'previously removed, and do not redirect Luca to settings. '
+                        'Ask him to say "forget that <exact memory text>" or use a '
+                        'unique description.')
             latest = store.latest()
             if latest is None:
                 return "No memory was deleted because there are no stored memories. Say so plainly."
@@ -550,6 +575,19 @@ def handle_memory_turn(store, user_input, last_reply=None):
                     f"The most recent stored memory is \"{latest['text']}\", from {date}. "
                     f"Tell Luca to say exactly \"forget that {latest['text']}\" if he "
                     "wants it removed.")
+
+    if is_memory_request(user_input):
+        # Never let inference save a fact from the same guarded turn while
+        # telling the model that nothing changed. The guard is a control note,
+        # not a claim that the model's eventual spoken answer is guaranteed.
+        return ("Nothing was saved or deleted this turn. No supported memory command "
+                'was recognized. Do not claim "got it", "forgotten", "already done", '
+                'or that a memory was previously removed; do not redirect Luca to '
+                'settings. "Forget it" only drops the conversation topic; "forget '
+                'them" is not a supported deletion command. If Luca intended a memory '
+                'change, give the exact phrasing: "remember that <fact>" as a statement '
+                'to save, or "forget that <exact memory text>" to remove. Otherwise '
+                'answer normally without claiming a memory action.')
 
     saved = [store.add(item["text"], kind=item["kind"], source="inferred")
              for item in infer_memories(user_input)]
