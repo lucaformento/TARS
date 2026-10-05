@@ -135,7 +135,11 @@ _CREDENTIAL_TERMS = re.compile(
     r"|api keys?|access tokens?|auth tokens?|(?:secret|private) keys?"
     r"|(?:recovery|seed) phrases?)\b"
 )
-_SECRET_WORDS = {"code", "codes", "combination", "combo", "pin", "passcode", "password"}
+# Code words accept short secrets (four digits, or letters and digits). Account
+# words need six or more digits, so "my graphics card is a 4090" stays allowed.
+_SECRET_WORDS = {"code", "codes", "combination", "combo", "pin", "passcode", "password",
+                 "otp", "2fa", "mfa"}
+_ACCOUNT_WORDS = {"account", "accounts", "acct", "card", "iban", "routing"}
 _CONNECTORS = {"is", "was", "are", ":", "="}
 _CODE_EXEMPT = {"zip", "postal", "area", "error", "status", "course", "class"}
 _CONTEXT_WINDOW = 6
@@ -166,14 +170,16 @@ def _normalized(text):
                              else m.group()), text)
 
 
-def _secret_value(token):
+def _secret_value(token, word=None):
     digits = sum(c.isdigit() for c in token)
+    if word in _ACCOUNT_WORDS:
+        return digits >= 6
     letters = sum(c.isalpha() for c in token)
     return digits >= 4 or (digits >= 1 and letters >= 1 and len(token) >= 4)
 
 
 def _keyword_at(tokens, index):
-    return (tokens[index] in _SECRET_WORDS
+    return ((tokens[index] in _SECRET_WORDS or tokens[index] in _ACCOUNT_WORDS)
             and not (index and tokens[index - 1] in _CODE_EXEMPT))
 
 
@@ -189,21 +195,22 @@ def _code_in_context(norm):
     for i in range(len(tokens)):
         if not _keyword_at(tokens, i):
             continue
-        if i + 1 < len(tokens) and _secret_value(tokens[i + 1]):
+        word = tokens[i]
+        if i + 1 < len(tokens) and _secret_value(tokens[i + 1], word):
             return True
         for j in range(i + 1, min(i + 1 + _CONTEXT_WINDOW, len(tokens))):
             if tokens[j] in _CONNECTORS:
                 k = j
                 while k < len(tokens) and tokens[k] in _CONNECTORS:
                     k += 1
-                if k < len(tokens) and _secret_value(tokens[k]):
+                if k < len(tokens) and _secret_value(tokens[k], word):
                     return True
                 break
     for i in range(len(tokens) - 1):
-        if _secret_value(tokens[i]) and tokens[i + 1] in _CONNECTORS:
-            if any(_keyword_at(tokens, j)
-                   for j in range(i + 2, min(i + 2 + _CONTEXT_WINDOW, len(tokens)))):
-                return True
+        if tokens[i + 1] in _CONNECTORS:
+            for j in range(i + 2, min(i + 2 + _CONTEXT_WINDOW, len(tokens))):
+                if _keyword_at(tokens, j) and _secret_value(tokens[i], tokens[j]):
+                    return True
     return False
 
 

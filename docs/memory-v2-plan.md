@@ -478,6 +478,10 @@ After Codex's phase 1 review:
     become digits.
   - Accepted false positive: a sentence like "the code is 1000 lines" is not
     saved as a quiet note.
+  - After Codex's second review, "OTP", "2FA", and "MFA" also act as code
+    words. Account words ("account", "card", "IBAN", "routing") need a value
+    with six or more digits. "My card is 4242424242424243" is therefore
+    blocked, while "my graphics card is 4090" is allowed.
 - **Check-in state shape.** The file must have exactly the expected keys,
   version 1, a list of `YYYY-MM-DD` strings, and a well-formed reservation.
   Anything else is quarantined as corrupt and today counts as used. A string,

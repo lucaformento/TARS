@@ -106,6 +106,14 @@ class SecretGuardTests(unittest.TestCase):
         "the gate code is a 7 x 9 k",
         "the one-time code was 551204",
         "my two-factor code is 123456",
+        # Codex's second review.
+        "OTP 123456",
+        "My 2FA is 123456",
+        "OTP is A7X9K2",
+        "My bank account is 123456789",
+        "My card is 4242424242424243",
+        "PIN #4821 unlocks my phone",
+        "123456789 is my account",
     ]
     ALLOWED = [
         "My phone number is 555 123 4567.",
@@ -130,6 +138,12 @@ class SecretGuardTests(unittest.TestCase):
         "My zip code's 94110.",
         "I have twenty two servos.",
         "Is the code done? 2026 was a good year.",
+        "My graphics card is a 4090.",
+        "My graphics card is 4090.",
+        "My account has 1500 followers.",
+        "I made the account in 2026.",
+        "I set up 2FA on GitHub.",
+        "OTP is a security feature.",
     ]
 
     def test_blocked_examples(self):
