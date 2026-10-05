@@ -11,7 +11,7 @@ synthesized sentence-by-sentence through ElevenLabs (or local Piper) with
 one-sentence lookahead. The robot has application-owned personality state and a
 persistent, user-correctable memory. The articulated body is the next phase.
 
-**Status:** working voice prototype, validated live on the Pi. 113 offline tests.
+**Status:** working voice prototype, validated live on the Pi. 127 offline tests.
 
 ## System overview
 
@@ -96,8 +96,11 @@ guess can never silently become a fact.
   entries and 1,200 characters; entries are capped at 240 characters and the
   store at 500 (oldest inferred entries are evicted first, explicit ones never).
 - **Corrections:** "forget that I like PETG" deletes one unambiguous match;
-  ambiguous requests delete nothing and ask for specifics. Re-stating an
-  inferred entry upgrades it to `CONFIRMED`.
+  ambiguous requests delete nothing and ask for specifics. A bare "forget that"
+  deletes only the newest memory saved since TARS started and names it; with
+  nothing saved this run it deletes nothing and gives the exact phrase instead.
+  "Forget it" never deletes. Re-stating an inferred entry upgrades it to
+  `CONFIRMED`.
 - **Durability:** writes go to a temp file, `fsync`, then atomic `os.replace`.
   A failed write leaves memory and disk unchanged, and TARS is told not to claim
   success. An unparsable file is quarantined, never overwritten; an unreadable
@@ -159,7 +162,7 @@ synthesis from ~2.1 s to 0.05 s for a short line
 | Wake word | openWakeWord 0.4.0, custom "Hey TARS" ONNX model; 9/9 detections in clean Pi trials |
 | STT | faster-whisper 1.2.1, `base`, CPU INT8, English |
 | LLM | Anthropic SDK 0.111.0; default `claude-sonnet-4-6`; 20 s timeout, 1 retry; 160 output tokens for voice |
-| TTS | ElevenLabs `eleven_multilingual_v2`, 24 kHz s16le PCM; Piper 1.8.0 as the local fallback |
+| TTS | ElevenLabs `eleven_multilingual_v2` with a designed synthetic voice (not a clone), speed 0.92, 85% volume; 24 kHz s16le PCM; Piper 1.8.0 as the local fallback |
 
 ## Repository layout
 
@@ -223,14 +226,12 @@ python -m unittest discover -s tests
 - The wake word accepts some near phrases ("hey stars"); this was a deliberate
   trade-off for recall.
 - Whisper `base` can mishear short, quiet phrases.
-- A bare "forget that" removes the most recently updated memory; a version
-  scoped to the current session is in review.
+- Memory commands must be the whole utterance, and Whisper sometimes hears
+  "forget them." When nothing parses, the model can still claim it saved or
+  deleted something; a guard that tells it nothing changed is in review.
 - Conversation history is process-local; only memory persists across restarts.
 - Model and device paths are configured for this Pi; a portable install script
   and lockfile do not exist yet.
-- The voice is a stock ElevenLabs voice for now. The replacement is being
-  created with text-prompted voice design — a new synthetic voice, not a clone
-  of any real person.
 
 ## Roadmap
 
@@ -239,7 +240,8 @@ python -m unittest discover -s tests
 - [x] Persistent memory with confirmed/inferred provenance
 - [x] Turn-level failure recovery, verified under a live network outage
 - [ ] First-response latency: same-clip `tiny.en` vs. beam-size benchmark, endpoint tuning, Flash TTS for sentence one
-- [ ] Designed TARS-style voice and optional "machine body" output filter
+- [x] Designed TARS-style voice, tuned by ear on the Pi speaker
+- [ ] Optional "machine body" output filter
 - [ ] Model-judged memory: let the model decide what is worth keeping
 - [ ] Continuous capture with echo control for barge-in
 - [ ] Articulated, 3D-printed body with servo control
