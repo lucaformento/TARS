@@ -767,6 +767,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
     )
     stt = WhisperModel(stt_model, device="cpu", compute_type="int8")
     tars = TARS(model=brain_model, voice=True)  # short, speech-shaped replies
+    notes_on = tars.enable_memory_notes()
 
     print("Warming speech recognition...")
     warm_started = time.perf_counter()
@@ -775,6 +776,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
     if diagnostics:
         print(f"Speech recognition ready ({warm_seconds:.1f}s startup warm-up).")
         print(f"Response model: {tars.model}")
+        print(f"Memory notes: {'on' if notes_on else 'off'}")
     else:
         print("Speech recognition ready.")
     if diagnostic_dir is not None:
@@ -784,7 +786,8 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
         )
 
     buffered_input = BufferedInput()
-    with sd.InputStream(device=dev, samplerate=SR, channels=1,
+    # closing(tars) stops the note-taker on every exit, including Ctrl+C.
+    with closing(tars), sd.InputStream(device=dev, samplerate=SR, channels=1,
                         dtype="int16", blocksize=FRAME, latency=0.2,
                         callback=buffered_input.callback) as stream:
         buffered_input.attach(stream)
@@ -805,6 +808,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                 continue
 
             print("[wake]")
+            tars.begin_session()
             if hasattr(oww, "reset"):
                 oww.reset()
             # Do not flush here: queued frames can contain the beginning of a
@@ -866,6 +870,9 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                         if heard:
                             print(f"  Luca: {heard}")
                             metrics = speak_stream(tars, voice, heard)
+                            # Only a reply that was generated and played in
+                            # full may become a quiet memory note.
+                            tars.submit_note()
                 except MicrophoneStreamError:
                     raise
                 except Exception as exc:

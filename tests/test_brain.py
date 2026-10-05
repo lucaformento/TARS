@@ -144,7 +144,8 @@ class BrainTests(unittest.TestCase):
         client = FakeClient([FakeStream(["First sentence.", " Unheard remainder."])])
         tars = brain.TARS(client=client)
         response = tars.respond_stream("Begin")
-        self.assertEqual(next(response), "First sentence.")
+        # Replies are yielded sentence by sentence, with a separating space.
+        self.assertEqual(next(response), "First sentence. ")
         response.close()
         self.assertEqual(
             tars.conversation,

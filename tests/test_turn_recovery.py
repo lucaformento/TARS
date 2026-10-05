@@ -65,6 +65,13 @@ class FakeBuffer:
             raise OSError("device gone")
 
 
+def silence():
+    return voice_frontend.CaptureResult(
+        clip=None, last_loud_read_at=0.0, endpoint_reason="timeout",
+        rms_levels=[], input_overflows=0,
+    )
+
+
 def capture(overflows=0):
     return voice_frontend.CaptureResult(
         clip=[0.0] * 1600, last_loud_read_at=0.0, endpoint_reason="silence",
@@ -88,6 +95,7 @@ class TurnRecoveryTests(unittest.TestCase):
         }
         self.stt = stt
         self.whisper = modules["faster_whisper"].WhisperModel
+        self.tars = modules["brain"].TARS.return_value
         device = MagicMock()
         device.query_devices.return_value = [{"name": "USB PnP", "max_input_channels": 1}]
         self.speak_stream = MagicMock(side_effect=speak_stream)
@@ -151,6 +159,20 @@ class TurnRecoveryTests(unittest.TestCase):
                           stt_model="base", stt_beam=5)
         self.assertEqual(self.whisper.call_args.args, ("base",))
         self.assertEqual(self.stt.transcribe.call_args.kwargs["beam_size"], 5)
+
+    def test_note_is_submitted_only_after_a_reply_plays_in_full(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_loop([capture(), silence()])
+        self.tars.enable_memory_notes.assert_called_once_with()
+        self.tars.begin_session.assert_called_once_with()
+        self.tars.submit_note.assert_called_once_with()
+        self.tars.close.assert_called_once_with()
+
+    def test_failed_reply_never_submits_a_note(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_loop([capture()], speak_stream=PortAudioError("Stream is stopped"))
+        self.tars.submit_note.assert_not_called()
+        self.tars.close.assert_called_once_with()
 
     def test_cloud_speech_error_keeps_existing_message(self):
         with self.assertRaises(KeyboardInterrupt):

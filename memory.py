@@ -8,10 +8,12 @@ Parsing and inference are pure functions with no I/O, matching personality.py,
 so they can be tested without touching the filesystem.
 """
 
+from functools import wraps
 import json
 import os
 import re
 import tempfile
+import threading
 import uuid
 import warnings
 from datetime import datetime, timezone
@@ -256,11 +258,34 @@ def infer_memories(text):
 # Store
 # --------------------------------------------------------------------------
 
+def entry_revision(entry):
+    """A check-in may only change the exact entry version it asked about."""
+    return f"{entry['updated']}|{entry['text']}"
+
+
+def _locked(method):
+    """Hold the store lock for the whole call; never hand out live entries."""
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            result = method(self, *args, **kwargs)
+        return dict(result) if isinstance(result, dict) else result
+    return wrapper
+
+
 class MemoryStore:
-    """Durable, auditable memory. One JSON file, atomic writes."""
+    """Durable, auditable memory. One JSON file, atomic writes.
+
+    The background note-taker writes while the next turn may read or write, so
+    every public method holds a reentrant lock across its whole read, modify,
+    and persist sequence. `epoch` counts explicit memory commands; a note job
+    from an older epoch is dropped instead of applied.
+    """
 
     def __init__(self, path=None):
         self.path = Path(path) if path else DEFAULT_PATH
+        self.lock = threading.RLock()
+        self.epoch = 0
         self.entries = []
         self.load_error = None
         # Process-local by design: these IDs represent memories added or
@@ -270,6 +295,7 @@ class MemoryStore:
 
     # ---- persistence ----
 
+    @_locked
     def load(self):
         self.entries = []
         self.load_error = None
@@ -367,6 +393,7 @@ class MemoryStore:
 
     # ---- mutation ----
 
+    @_locked
     def add(self, text, kind="fact", source="stated"):
         """Add or update one entry. Returns the entry, or None if unusable."""
         text = _normalize(text)
@@ -406,6 +433,7 @@ class MemoryStore:
         self._saved_this_run.add(entry["id"])
         return entry
 
+    @_locked
     def forget(self, text):
         """Remove one unambiguous match; raise AmbiguousMemory otherwise."""
         entry = self._match(text)
@@ -415,6 +443,7 @@ class MemoryStore:
         self._saved_this_run.discard(entry["id"])
         return entry
 
+    @_locked
     def forget_last(self):
         if not self.entries:
             return None
@@ -423,6 +452,7 @@ class MemoryStore:
         self._saved_this_run.discard(entry["id"])
         return entry
 
+    @_locked
     def forget_last_saved_this_run(self):
         candidates = [(index, entry) for index, entry in enumerate(self.entries)
                       if entry["id"] in self._saved_this_run]
@@ -433,6 +463,56 @@ class MemoryStore:
         self._saved_this_run.discard(entry["id"])
         return entry
 
+    @_locked
+    def add_note(self, text, kind="fact"):
+        """Quietly save one model-judged guess as UNCONFIRMED.
+
+        A note that matches any existing entry changes nothing: it never
+        promotes a guess, refreshes a timestamp, or counts as saved this run.
+        """
+        text = _normalize(text)
+        if not text or len(text) > MAX_ENTRY_CHARS or kind not in ("fact", "preference"):
+            return None
+        key = _identity(text, kind)
+        if any(_identity(e["text"], e["kind"]) == key for e in self.entries):
+            return None
+        return self.add(text, kind=kind, source="inferred")
+
+    @_locked
+    def checkin_candidates(self, limit):
+        """Unconfirmed, non-joke entries for a check-in, newest first."""
+        guesses = [e for e in self.entries if e["source"] == "inferred" and e["kind"] != "bit"]
+        guesses.sort(key=lambda e: e["updated"], reverse=True)
+        return [dict(e) for e in guesses[:limit]]
+
+    def _checked_entry(self, entry_id, revision):
+        entry = next((e for e in self.entries if e["id"] == entry_id), None)
+        if entry is None or entry["source"] != "inferred" or entry_revision(entry) != revision:
+            return None
+        return entry
+
+    @_locked
+    def confirm_checked(self, entry_id, revision):
+        """Upgrade the exact guess a check-in asked about. False if it changed."""
+        entry = self._checked_entry(entry_id, revision)
+        if entry is None:
+            return False
+        upgraded = dict(entry, source="stated", updated=_now())
+        self._commit([upgraded if e is entry else e for e in self.entries])
+        self._saved_this_run.add(upgraded["id"])
+        return True
+
+    @_locked
+    def retract_checked(self, entry_id, revision):
+        """Delete the exact guess a check-in asked about. False if it changed."""
+        entry = self._checked_entry(entry_id, revision)
+        if entry is None:
+            return False
+        self._commit([e for e in self.entries if e is not entry])
+        self._saved_this_run.discard(entry["id"])
+        return True
+
+    @_locked
     def latest(self):
         if not self.entries:
             return None
@@ -464,9 +544,11 @@ class MemoryStore:
             raise AmbiguousMemory("More than one memory matches that description.")
         return matches[0] if matches else None
 
+    @_locked
     def all(self):
         return [dict(entry) for entry in self.entries]
 
+    @_locked
     def for_prompt(self):
         """Bounded, prioritised memory block. Confirmed first, bits last."""
         stated = [e for e in self.entries if e["source"] == "stated" and e["kind"] != "bit"]
@@ -495,6 +577,7 @@ class MemoryStore:
             used += cost
         return "\n".join(lines) if lines else None
 
+    @_locked
     def spoken_summary(self, limit=8):
         """A short list for when Luca asks what TARS remembers."""
         if not self.entries:
@@ -515,7 +598,7 @@ class MemoryStore:
 # Turn handling — the single entry point brain.py needs
 # --------------------------------------------------------------------------
 
-def handle_memory_turn(store, user_input, last_reply=None):
+def handle_memory_turn(store, user_input, last_reply=None, infer=True):
     """Apply memory effects for one turn. Returns a control note, or None.
 
     Explicit commands win. Inference runs only when the turn was not itself a
@@ -589,6 +672,9 @@ def handle_memory_turn(store, user_input, last_reply=None):
                 'to save, or "forget that <exact memory text>" to remove. Otherwise '
                 'answer normally without claiming a memory action.')
 
+    if not infer:
+        # Model-judged notes replace pattern inference after a completed turn.
+        return None
     saved = [store.add(item["text"], kind=item["kind"], source="inferred")
              for item in infer_memories(user_input)]
     if any(saved):

@@ -573,6 +573,40 @@ def action_from_response(response, checkin_pending=False):
 
 
 # --------------------------------------------------------------------------
+# Applying a decision to the store
+# --------------------------------------------------------------------------
+
+def store_applier(store):
+    """Build the worker's `apply` callback for a MemoryStore.
+
+    Everything happens under the store lock: a stopped worker or a record from
+    an older command epoch is dropped, so a delayed note can never undo an
+    explicit command such as "forget that". Confirm and retract count as
+    explicit changes and advance the epoch.
+    """
+    def apply(record, action, stopped):
+        with store.lock:
+            if stopped():
+                return "dropped (shutting down)"
+            if record.epoch != store.epoch:
+                return "dropped (memory changed)"
+            if action.kind == "add":
+                return "saved" if store.add_note(action.text, action.note_kind) else "duplicate"
+            pending = record.checkin
+            change = store.confirm_checked if action.kind == "confirm" else store.retract_checked
+            if pending is None or not change(pending.entry_id, pending.revision):
+                return "dropped (entry changed)"
+            store.epoch += 1
+            return "done"
+    return apply
+
+
+def notes_enabled():
+    """Model-judged notes are on unless TARS_MEMORY_NOTES turns them off."""
+    return os.environ.get("TARS_MEMORY_NOTES", "").strip().lower() not in ("0", "off", "false", "no")
+
+
+# --------------------------------------------------------------------------
 # Background worker
 # --------------------------------------------------------------------------
 

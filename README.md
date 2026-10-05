@@ -89,12 +89,36 @@ guess can never silently become a fact.
 | Source | How it is created | Prompt label |
 | :--- | :--- | :--- |
 | Explicit | "remember that I prefer PETG", "remember I work nights" | `CONFIRMED` |
-| Inferred | Narrow first-person patterns ("I like…", "I'm working on…", "my X is…"); questions are never mined | `UNCONFIRMED` |
+| Quiet note | After a reply has been generated and played in full, Claude Haiku 4.5 judges whether the exchange holds one durable fact about Luca ("still true and useful a month from now?") | `UNCONFIRMED` |
 | Running joke | "remember that" right after a TARS line | `RUNNING JOKE` |
 
 - **Retrieval is bounded:** confirmed before inferred, newest first, at most 20
   entries and 1,200 characters; entries are capped at 240 characters and the
   store at 500 (oldest inferred entries are evicted first, explicit ones never).
+- **Quiet notes are proposals, not decisions.** The model only proposes an
+  action. Local code then decides whether it applies:
+  - It validates the output against a strict schema.
+  - A secret guard rejects passwords, PINs, codes, and account or card numbers,
+    including spoken digits.
+  - A note is dropped if any explicit memory command ran after its turn. A
+    delayed note therefore can never undo a "forget that".
+
+  Notes run on a background worker after playback, never on the reply's path,
+  and a failure changes nothing. The note request sends Anthropic the same
+  bounded memory block the reply already sent. It never sends the whole
+  store.
+- **Check-ins:** at most once per local day, TARS may ask about one directly
+  relevant guess ("You mentioned a printer in November. Still the plan?").
+  - **Enforcement:** the daily allowance is reserved in a private state file
+    before generation.
+  - **Marking:** the question must begin with a marker that is removed before
+    speech, and any extra or malformed marked sentence is suppressed.
+  - **Answers:** "yes" or "no" counts only on the next turn of the same wake,
+    and only for that exact entry. A yes upgrades it to `CONFIRMED`; a no
+    deletes it.
+- **Honesty:** TARS is told that only the application changes memory. If Luca
+  asks to remember or forget something and nothing changed, a control note
+  says so and gives the exact wording to use.
 - **Corrections:** "forget that I like PETG" deletes one unambiguous match;
   ambiguous requests delete nothing and ask for specifics. A bare "forget that"
   deletes only the newest memory saved since TARS started and names it; with
@@ -213,6 +237,7 @@ python cloud_speech.py audition --voice-id VOICE_ID  # one paid sample
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Required for `--tts elevenlabs` |
 | `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2` (default) or `eleven_flash_v2_5` |
 | `ELEVENLABS_SPEED`, `TARS_VOLUME` | Delivery overrides; defaults `0.92` (8% slower) and `0.85` (15% quieter) |
+| `TARS_MEMORY_NOTES` | `0` turns off model-judged notes and check-ins and returns to pattern inference |
 | `TARS_STT_MODEL`, `TARS_STT_BEAM` | Speech recognition; defaults `tiny.en` and `1`; `base` and `5` restore the earlier setting |
 
 Tests (no network, audio device, or API key needed):
@@ -231,9 +256,10 @@ python -m unittest discover -s tests
 - The wake word accepts some near phrases ("hey stars"); this was a deliberate
   trade-off for recall.
 - Whisper can mishear short, quiet phrases and some words ("servo" as "server").
-- Memory commands must be the whole utterance, and Whisper sometimes hears
-  "forget them." When nothing parses, the model can still claim it saved or
-  deleted something; a guard that tells it nothing changed is in review.
+- Memory commands must be the whole utterance (leading fillers such as "yeah,
+  just" are fine), and Whisper sometimes hears "forget them," which never
+  deletes. Whether the note-taker rejects trivia is judged in live use, not by
+  the offline tests.
 - Conversation history is process-local; only memory persists across restarts.
 - Model and device paths are configured for this Pi; a portable install script
   and lockfile do not exist yet.
@@ -248,7 +274,7 @@ python -m unittest discover -s tests
 - [ ] First-response latency: endpoint tuning, Flash TTS for sentence one
 - [x] Designed TARS-style voice, tuned by ear on the Pi speaker
 - [ ] Optional "machine body" output filter
-- [ ] Model-judged memory: let the model decide what is worth keeping
+- [x] Model-judged memory notes with daily check-ins (pending live acceptance)
 - [ ] Continuous capture with echo control for barge-in
 - [ ] Articulated, 3D-printed body with servo control
 

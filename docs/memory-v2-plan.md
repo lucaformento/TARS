@@ -494,3 +494,44 @@ After Codex's phase 1 review:
   remember/forget mention, or a forget that deletes nothing) counts as a memory
   command. It skips the note job and increments the command epoch, even when
   memory is unchanged.
+
+## Implementation notes (phase 2)
+
+Phase 2 wires the standalone parts into TARS. All 213 offline tests pass.
+
+- **Store (`memory.py`).**
+  - Every public method holds an `RLock` across read, modify, and persist, and
+    returns copies.
+  - `epoch` counts explicit memory commands.
+  - `add_note` never promotes or refreshes an entry.
+  - `confirm_checked` and `retract_checked` require the exact
+    `entry_revision`.
+  - `handle_memory_turn(..., infer=False)` turns off pattern inference while
+    notes are on.
+- **Brain (`brain.py`).** `respond_stream` handles each turn in this order:
+  1. Classify the turn with `is_memory_request`. For a memory request, wait up
+     to 2 s for the note-taker, without holding the lock.
+  2. Holding the lock, increment the epoch and run the command.
+  3. Reserve and offer check-in candidates.
+  4. Filter the reply sentence by sentence through `MarkerFilter`.
+  5. Settle the check-in.
+  6. Store the turn's inputs only when the model stream finished on its own.
+
+  `submit_note()` builds the `TurnRecord` with the current epoch. The front
+  end calls it only after playback succeeded. `begin_session()` on each wake
+  expires an unanswered check-in. `close()` stops the worker.
+- **Front ends.** `tars_voice.py` calls `begin_session` at each wake and
+  `submit_note` after `speak_stream` returns. It wraps the session in
+  `closing(tars)`. `tars.py` submits after each reply and closes on exit.
+  `TARS_MEMORY_NOTES=0` disables memory v2.
+- **Prompt (`personality.py`).**
+  - A standing rule says only the application changes memory, and TARS must
+    never claim it just saved, updated, deleted, or forgot a memory without a
+    control event. This closes the gap for synonyms such as "delete that" and
+    "make a note".
+  - UNCONFIRMED guesses are asked about only through an offered check-in.
+  - On an answer turn, a control note tells TARS not to claim that memory
+    changed.
+- **Behavior change.** Replies are now yielded sentence by sentence, as the
+  plan required. Spoken audio is unchanged, but the console and the
+  `first_text` diagnostic advance per sentence instead of per delta.
