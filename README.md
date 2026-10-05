@@ -205,6 +205,7 @@ python cloud_speech.py audition --voice-id VOICE_ID  # one paid sample
 | `ANTHROPIC_MODEL` | Optional; one of `claude-sonnet-4-6`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Required for `--tts elevenlabs` |
 | `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2` (default) or `eleven_flash_v2_5` |
+| `ELEVENLABS_SPEED`, `TARS_VOLUME` | Delivery overrides; defaults `0.92` (8% slower) and `0.85` (15% quieter) |
 
 Tests (no network, audio device, or API key needed):
 

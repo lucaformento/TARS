@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import numpy as np
+
 
 API_ROOT = "https://api.elevenlabs.io"
 SAMPLE_RATE = 24000
@@ -28,6 +30,13 @@ MODELS = (DEFAULT_MODEL, "eleven_flash_v2_5")
 SOCKET_TIMEOUT = 15.0
 REQUEST_DEADLINE = 90.0
 MAX_AUDIO_BYTES = SAMPLE_RATE * 2 * 120
+# Delivery chosen by ear on the Pi speaker with TARS-B1: 8% slower and 15%
+# quieter than ElevenLabs' defaults. ELEVENLABS_SPEED and TARS_VOLUME override
+# them for listening tests without a code change.
+DEFAULT_SPEED = 0.92
+SPEED_RANGE = (0.7, 1.2)
+DEFAULT_VOLUME = 0.85
+VOLUME_RANGE = (0.1, 1.0)
 NAME_TEST = "Luca. I'm listening, Luca."
 VOICE_TEST = (
     "Luca, I'm ready when you are. "
@@ -65,6 +74,20 @@ def load_environment():
 
     # Read this project's .env only; exported variables take precedence.
     load_dotenv(Path(__file__).resolve().with_name(".env"), override=False)
+
+
+def _setting(name, default, valid_range):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    low, high = valid_range
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not low <= value <= high:
+        raise CloudSpeechError(f"{name} must be a number from {low} to {high}.")
+    return value
 
 
 def _api_key():
@@ -156,6 +179,8 @@ class ElevenLabsVoice:
         self.voice_id = voice_id or os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
         self.model_id = model_id or os.environ.get("ELEVENLABS_MODEL_ID", DEFAULT_MODEL).strip()
         self.name_alias = name_alias if name_alias is not None else os.environ.get("TARS_NAME_ALIAS", "")
+        self.speed = _setting("ELEVENLABS_SPEED", DEFAULT_SPEED, SPEED_RANGE)
+        self.volume = _setting("TARS_VOLUME", DEFAULT_VOLUME, VOLUME_RANGE)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.voice_id):
             raise CloudSpeechError("Choose a voice and set ELEVENLABS_VOICE_ID. See docs/cloud-voice.md.")
         if self.model_id not in MODELS:
@@ -207,7 +232,7 @@ class ElevenLabsVoice:
         payload = {"text": text, "model_id": self.model_id,
                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75,
                                       "style": 0.0, "use_speaker_boost": True,
-                                      "speed": 1.0}}
+                                      "speed": self.speed}}
         if self._previous_text:
             payload["previous_text"] = self._previous_text
         started, received, pending = time.monotonic(), 0, b""
@@ -288,8 +313,9 @@ class ElevenLabsVoice:
             # its response was closed. Discard it so a late worker never
             # changes the speech context of a later reply.
             raise SpeechPreparationCancelled()
+        pcm = self._apply_volume(bytes(pcm_buffer))
         ended = time.perf_counter()
-        audio_bytes = len(pcm_buffer)
+        audio_bytes = len(pcm)
         stats = {
             "prepare_s": ended - started,
             "download_s": ended - started,
@@ -307,7 +333,15 @@ class ElevenLabsVoice:
             "underflows": 0,
         }
         self._previous_text = text[-500:]
-        return PreparedSpeech(text=text, pcm=bytes(pcm_buffer), stats=stats)
+        return PreparedSpeech(text=text, pcm=pcm, stats=stats)
+
+    def _apply_volume(self, pcm):
+        # Scaling the fully downloaded sentence on the download thread keeps
+        # playback untouched; a gain at or below 1.0 cannot clip.
+        if self.volume == 1.0 or not pcm:
+            return pcm
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+        return np.rint(samples * self.volume).astype("<i2").tobytes()
 
     def _abort_output(self):
         if self._output is not None:

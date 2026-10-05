@@ -67,6 +67,8 @@ class VoiceTests(unittest.TestCase):
             "ELEVENLABS_VOICE_ID": "voice123",
             "ELEVENLABS_MODEL_ID": cloud.DEFAULT_MODEL,
             "TARS_NAME_ALIAS": "",
+            "ELEVENLABS_SPEED": "",
+            "TARS_VOLUME": "",
         })
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -101,7 +103,7 @@ class VoiceTests(unittest.TestCase):
                          b"\x01\x00\x02\x00")
         self.assertTrue(first.closed)
         self.assertEqual(self.payload()["text"], "Hello, Luca.")
-        self.assertEqual(self.payload()["voice_settings"]["speed"], 1.0)
+        self.assertEqual(self.payload()["voice_settings"]["speed"], cloud.DEFAULT_SPEED)
         self.assertNotIn("previous_text", self.payload())
         request = self.opener.open.call_args.args[0]
         self.assertTrue(request.full_url.endswith("?output_format=pcm_24000"))
@@ -308,6 +310,43 @@ class VoiceTests(unittest.TestCase):
         self.assertIn("next_page_token=next", request.full_url)
         self.assertIn("search=deep", request.full_url)
         self.assertEqual(request.method, "GET")
+
+    @staticmethod
+    def pcm(*samples):
+        return b"".join(int(s).to_bytes(2, "little", signed=True) for s in samples)
+
+    def test_default_delivery_is_slower_and_quieter(self):
+        voice = cloud.ElevenLabsVoice()
+        self.respond([self.pcm(1000, -1000, 32767, -32768, 0)])
+        prepared = voice.prepare("Hello.")
+        self.assertEqual(self.payload()["voice_settings"]["speed"], 0.92)
+        self.assertEqual(prepared.pcm, self.pcm(850, -850, 27852, -27853, 0))
+        self.assertEqual(prepared.stats["audio_bytes"], 10)
+
+    def test_full_volume_leaves_audio_bit_exact(self):
+        original = self.pcm(1000, -1000, 32767, -32768, 7)
+        with patch.dict(os.environ, {"TARS_VOLUME": "1.0", "ELEVENLABS_SPEED": "1.0"}):
+            voice = cloud.ElevenLabsVoice()
+        self.respond([original])
+        prepared = voice.prepare("Hello.")
+        self.assertEqual(prepared.pcm, original)
+        self.assertEqual(self.payload()["voice_settings"]["speed"], 1.0)
+
+    def test_environment_overrides_delivery_settings(self):
+        with patch.dict(os.environ, {"TARS_VOLUME": "0.5", "ELEVENLABS_SPEED": "0.8"}):
+            voice = cloud.ElevenLabsVoice()
+        self.respond([self.pcm(1000)])
+        self.assertEqual(voice.prepare("Hello.").pcm, self.pcm(500))
+        self.assertEqual(self.payload()["voice_settings"]["speed"], 0.8)
+
+    def test_invalid_delivery_settings_fail_before_any_request(self):
+        for name, value in (("ELEVENLABS_SPEED", "fast"), ("ELEVENLABS_SPEED", "1.5"),
+                            ("ELEVENLABS_SPEED", "nan"), ("TARS_VOLUME", "0"),
+                            ("TARS_VOLUME", "1.2"), ("TARS_VOLUME", "-0.5")):
+            with self.subTest(name=name, value=value), patch.dict(os.environ, {name: value}):
+                with self.assertRaisesRegex(cloud.CloudSpeechError, name):
+                    cloud.ElevenLabsVoice()
+        self.opener.open.assert_not_called()
 
     def test_cloud_name_test_avoids_piper_wake_stt_and_brain(self):
         blocked = {"piper": None, "openwakeword": None, "faster_whisper": None,

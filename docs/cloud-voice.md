@@ -8,9 +8,16 @@ how the voice sounds or how quickly the Pi responds.
 
 ## What to choose
 
+**Current voice (October 5, 2026):** TARS-B1 (`1LEJRs8TVTJqtqlKrZ1G`), a
+synthetic voice made with ElevenLabs Voice Design rather than cloned from a
+person, replaced Roger after a Pi-speaker audition. Delivery is speed 0.92 and
+85% output volume (`ELEVENLABS_SPEED`, `TARS_VOLUME`); stability, similarity,
+style, and speaker boost are unchanged. Roger remains the rollback. The history
+below records how Roger was chosen.
+
 Roger — Laid-Back, Casual, Resonant — won the browser audition. Its voice ID is
 `CwhRBWXzGAHq8TQ4Fs17`. The selected sample used speed 1.0, stability 0.5,
-similarity 0.75, style 0.0, and speaker boost. These match the runtime settings.
+similarity 0.75, style 0.0, and speaker boost.
 The first Pi audition pronounced “Luca” correctly and sounded natural at speed
 1.0. Some repeated trials stuttered when network chunks arrived unevenly, so the
 player now holds a half-second PCM lead before starting the speaker.
