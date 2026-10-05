@@ -74,7 +74,7 @@ def capture(overflows=0):
 
 class TurnRecoveryTests(unittest.TestCase):
     def run_loop(self, captures, speak_stream=None, speak=None, transcribe=None,
-                 fail_start=False):
+                 fail_start=False, **conversation_options):
         detector = MagicMock()
         detector.predict.return_value = {"hey_tars": 0.9}
         stt = MagicMock()
@@ -86,6 +86,8 @@ class TurnRecoveryTests(unittest.TestCase):
             "faster_whisper": types.SimpleNamespace(WhisperModel=MagicMock(return_value=stt)),
             "brain": types.SimpleNamespace(TARS=MagicMock()),
         }
+        self.stt = stt
+        self.whisper = modules["faster_whisper"].WhisperModel
         device = MagicMock()
         device.query_devices.return_value = [{"name": "USB PnP", "max_input_channels": 1}]
         self.speak_stream = MagicMock(side_effect=speak_stream)
@@ -102,7 +104,7 @@ class TurnRecoveryTests(unittest.TestCase):
                 patch.object(voice_frontend, "speak", self.speak), \
                 redirect_stdout(output):
             try:
-                voice_frontend.run_conversation(MagicMock())
+                voice_frontend.run_conversation(MagicMock(), **conversation_options)
             finally:
                 self.output = output.getvalue()
                 self.buffer = FakeBuffer.latest
@@ -134,6 +136,21 @@ class TurnRecoveryTests(unittest.TestCase):
             self.run_loop([capture()], transcribe=broken_whisper)
         self.assert_slept_with_microphone_restarted()
         self.speak_stream.assert_not_called()
+
+    def test_default_speech_recognition_is_tiny_english_greedy(self):
+        with self.assertRaises(KeyboardInterrupt):
+            # A failed reply ends the fake session after transcription.
+            self.run_loop([capture()], speak_stream=RuntimeError("end of test"))
+        self.assertEqual(self.whisper.call_args.args, ("tiny.en",))
+        self.assertEqual(self.stt.transcribe.call_args.kwargs, {"language": "en", "beam_size": 1})
+        self.assertIn("STT: tiny.en, beam 1", self.output)
+
+    def test_speech_recognition_override_reaches_whisper(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_loop([capture()], speak_stream=RuntimeError("end of test"),
+                          stt_model="base", stt_beam=5)
+        self.assertEqual(self.whisper.call_args.args, ("base",))
+        self.assertEqual(self.stt.transcribe.call_args.kwargs["beam_size"], 5)
 
     def test_cloud_speech_error_keeps_existing_message(self):
         with self.assertRaises(KeyboardInterrupt):

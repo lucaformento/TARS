@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from memory import (MemoryStore, handle_memory_turn, infer_memories,
-                    parse_memory_command)
+                    is_memory_request, parse_memory_command)
 from personality import BASELINE, build_personality
 
 
@@ -47,6 +47,54 @@ class TestParsing(unittest.TestCase):
         for phrase in ("forget it", "okay, forget it",
                        "never mind, forget it", "please forget it"):
             self.assertIsNone(parse_memory_command(phrase), phrase)
+
+    def test_leading_fillers_allow_whole_utterance_commands(self):
+        for filler in ("yeah", "yes", "just", "so", "um", "actually",
+                       "Yeah, just", "yes, um, actually", "yeah,just"):
+            with self.subTest(filler=filler):
+                self.assertEqual(parse_memory_command(f"{filler} forget that"),
+                                 ("forget", None))
+                self.assertEqual(parse_memory_command(f"{filler} forget this"),
+                                 ("forget", None))
+                self.assertEqual(parse_memory_command(f"{filler} remember I work nights"),
+                                 ("remember", "I work nights"))
+                self.assertEqual(parse_memory_command(f"{filler} what do you remember?"),
+                                 ("recall", None))
+
+    def test_fillers_preserve_payload_and_question_rejection(self):
+        self.assertEqual(parse_memory_command("Yeah, just remember that I say yes to PETG"),
+                         ("remember", "I say yes to PETG"))
+        for phrase in ("Yeah, just remember that I prefer PETG?",
+                       "Um, remember when we fixed the servo",
+                       "Actually, remember the time we fixed the servo"):
+            self.assertEqual(parse_memory_command(phrase), ("remember_rejected", None))
+
+    def test_fillers_can_precede_or_follow_one_transcribed_name(self):
+        for phrase in ("Hey TARS, yeah, just forget that", "Yeah, TARS, just forget that",
+                       "Yeah, hey TARS, just forget that"):
+            self.assertEqual(parse_memory_command(phrase), ("forget", None), phrase)
+
+    def test_forget_it_and_them_never_parse_as_deletions(self):
+        for phrase in ("Yeah, just forget it", "yes, never mind, forget it",
+                       "forget them my test word is pineapple",
+                       "Yeah, just forget them my test word is pineapple",
+                       "forget them", "forget them all", "forget it. I prefer PLA"):
+            self.assertIsNone(parse_memory_command(phrase), phrase)
+
+    def test_fillers_do_not_extract_commands_from_other_clauses(self):
+        for phrase in ('Yeah, she said "forget that"', '"Yeah, just forget that"',
+                       "Actually, if I say forget that, will you delete it",
+                       "Yes, I might forget that", "I said yeah just forget that",
+                       "yesman forget that", "justified forget that"):
+            self.assertIsNone(parse_memory_command(phrase), phrase)
+
+    def test_memory_request_classifier_includes_guarded_attempts_and_recall(self):
+        for phrase in ("Yeah, just forget it", "forget them my test word is pineapple",
+                       "Could you remember my preference?", "list your memories",
+                       "what do you know about me", "remember when we fixed the servo"):
+            self.assertTrue(is_memory_request(phrase), phrase)
+        for phrase in ("I am forgetful", "I am remembering the movie", "I prefer PETG", ""):
+            self.assertFalse(is_memory_request(phrase), phrase)
 
     def test_recall(self):
         for phrase in ("what do you remember", "what do you remember about me",
@@ -194,7 +242,9 @@ class TestTurnHandling(unittest.TestCase):
 
     def test_forget_unknown_is_honest(self):
         note = handle_memory_turn(self.store, "forget about my birthday")
-        self.assertIn("do not have", note)
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn("did not match a stored memory", note)
+        self.assertIn("Do not claim", note)
 
     def test_recall_lists_and_flags_guesses(self):
         self.store.add("prefers PETG Basic", source="stated")

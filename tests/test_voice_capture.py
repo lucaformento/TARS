@@ -178,6 +178,26 @@ class CaptureTests(unittest.TestCase):
 
         self.assertEqual(consumed, ["started", "finished"])
         model.transcribe.assert_called_once()
+        self.assertEqual(model.transcribe.call_args.kwargs["beam_size"], voice_frontend.STT_BEAM)
+
+    def test_speech_recognition_settings_from_environment(self):
+        cases = {(): ("tiny.en", 1), (("TARS_STT_MODEL", "base"), ("TARS_STT_BEAM", "5")): ("base", 5),
+                 (("TARS_STT_MODEL", " base.en "),): ("base.en", 1),
+                 (("TARS_STT_MODEL", ""), ("TARS_STT_BEAM", "")): ("tiny.en", 1)}
+        for env, expected in cases.items():
+            with self.subTest(env=env), patch.dict("os.environ", dict(env)):
+                for name in ("TARS_STT_MODEL", "TARS_STT_BEAM"):
+                    if name not in dict(env):
+                        __import__("os").environ.pop(name, None)
+                self.assertEqual(voice_frontend.stt_settings(), expected)
+
+    def test_invalid_speech_recognition_settings_name_the_variable(self):
+        for name, value in (("TARS_STT_MODEL", "large-v3"), ("TARS_STT_BEAM", "0"),
+                            ("TARS_STT_BEAM", "6"), ("TARS_STT_BEAM", "two"),
+                            ("TARS_STT_BEAM", "1.5")):
+            with self.subTest(name=name, value=value), patch.dict("os.environ", {name: value}):
+                with self.assertRaisesRegex(ValueError, name):
+                    voice_frontend.stt_settings()
 
     def test_input_restarts_even_when_processing_fails(self):
         stream = MagicMock()
