@@ -1,11 +1,12 @@
 """Regression cases from the memory candidate review; all stores are temporary."""
 
 import json
+from datetime import datetime as real_datetime
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -188,6 +189,102 @@ class MemoryRegressionTests(unittest.TestCase):
         note = handle_memory_turn(self.store, "remember that " + "x" * 241)
         self.assertIn("No memory was saved", note)
         self.assertEqual(self.store.all(), [])
+
+    def test_remember_questions_and_reminiscences_do_not_write(self):
+        self.store.add("existing fact", source="stated")
+        before_entries = self.store.all()
+        before_disk = self.path.read_bytes()
+        for phrase in ("remember when we fixed the servo?",
+                       "Hey TARS, remember the time we fixed the servo",
+                       "remember that I prefer PETG?"):
+            with self.subTest(phrase=phrase):
+                note = handle_memory_turn(self.store, phrase)
+                self.assertIn("Nothing was saved", note)
+                self.assertIn("Do not claim you remembered it", note)
+                self.assertEqual(self.store.all(), before_entries)
+                self.assertEqual(self.path.read_bytes(), before_disk)
+
+    def test_real_remember_statements_still_save_as_confirmed(self):
+        for index, phrase in enumerate(("remember that I prefer PETG",
+                                        "Hey TARS, remember I work nights")):
+            with self.subTest(phrase=phrase):
+                store = MemoryStore(self.path.with_name(f"real-save-{index}.json"))
+                note = handle_memory_turn(store, phrase)
+                self.assertIn("remember", note.lower())
+                self.assertEqual(len(store.all()), 1)
+                self.assertEqual(store.all()[0]["source"], "stated")
+
+    def test_forget_it_variants_do_not_delete_or_write(self):
+        self.store.add("I prefer PETG", source="stated")
+        before_entries = self.store.all()
+        before_disk = self.path.read_bytes()
+        for phrase in ("forget it", "okay, forget it", "never mind, forget it"):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(handle_memory_turn(self.store, phrase))
+                self.assertEqual(self.store.all(), before_entries)
+                self.assertEqual(self.path.read_bytes(), before_disk)
+
+    def test_previous_run_entry_is_never_deleted_by_bare_forget(self):
+        self.store.add("I work nights", source="stated")
+        reopened = MemoryStore(self.path)
+        before = self.path.read_bytes()
+        handle_memory_turn(reopened, "forget that")
+        self.assertEqual(reopened.all()[0]["text"], "I work nights")
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_current_run_entry_is_deleted_and_quoted(self):
+        for index, phrase in enumerate(("forget that", "forget this")):
+            with self.subTest(phrase=phrase):
+                store = MemoryStore(self.path.with_name(f"current-run-{index}.json"))
+                store.add("I prefer PLA", source="stated")
+                store.add("I prefer PETG", source="stated")
+                note = handle_memory_turn(store, phrase)
+                self.assertEqual([entry["text"] for entry in store.all()],
+                                 ["I prefer PLA"])
+                self.assertIn('"I prefer PETG"', note)
+
+    def test_no_current_run_save_names_latest_entry_date_and_command(self):
+        self.path.write_text(json.dumps([
+            {"id": "m_old", "text": "I prefer PLA", "kind": "preference",
+             "source": "stated", "created": "2026-09-20T12:00:00+00:00",
+             "updated": "2026-09-20T12:00:00+00:00"},
+            {"id": "m_latest", "text": "I work nights", "kind": "fact",
+             "source": "stated", "created": "2026-09-29T12:00:00+00:00",
+             "updated": "2026-09-29T12:00:00+00:00"},
+        ]))
+        store = MemoryStore(self.path)
+        before = self.path.read_bytes()
+        note = handle_memory_turn(store, "forget that")
+        self.assertIn("I work nights", note)
+        self.assertIn("September 29, 2026", note)
+        self.assertIn('"forget that I work nights"', note)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(len(store.all()), 2)
+
+    def test_latest_memory_date_uses_pi_local_time(self):
+        self.path.write_text(json.dumps([
+            {"id": "m_latest", "text": "I work nights", "kind": "fact",
+             "source": "stated", "created": "2026-09-29T01:00:00+00:00",
+             "updated": "2026-09-29T01:00:00+00:00"},
+        ]))
+        store = MemoryStore(self.path)
+        parsed_time = Mock()
+        parsed_time.astimezone.return_value = real_datetime(2026, 9, 28, 21, 0)
+        with patch("memory.datetime") as mocked_datetime:
+            mocked_datetime.fromisoformat.return_value = parsed_time
+            note = handle_memory_turn(store, "forget that")
+        parsed_time.astimezone.assert_called_once_with()
+        self.assertIn("September 28, 2026", note)
+        self.assertEqual(len(store.all()), 1)
+
+    def test_upgrade_this_run_counts_as_saved_this_run(self):
+        self.store.add("likes PETG", kind="preference", source="inferred")
+        reopened = MemoryStore(self.path)
+        handle_memory_turn(reopened, "remember that I prefer PETG")
+        self.assertEqual(reopened.all()[0]["source"], "stated")
+        note = handle_memory_turn(reopened, "forget this")
+        self.assertEqual(reopened.all(), [])
+        self.assertIn('"I prefer PETG"', note)
 
 
 if __name__ == "__main__":

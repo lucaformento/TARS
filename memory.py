@@ -108,10 +108,21 @@ _REMEMBER_WITH_OBJECT = re.compile(
 _REMEMBER_BARE = re.compile(
     rf"^{_LEAD}remember\s+(?:that|this|it|that one)$", re.IGNORECASE
 )
+_REMEMBER_REQUEST = re.compile(rf"^{_LEAD}remember\b", re.IGNORECASE)
+_REMEMBER_REMINISCENCE = re.compile(
+    rf"^{_LEAD}remember\s+(?:(?:when|where|who|what|why|how|which)\b|"
+    rf"(?:the|that)\s+time\b)",
+    re.IGNORECASE,
+)
 _FORGET = re.compile(
     rf"^{_LEAD}forget\s+(?:that\s+|about\s+|the\s+)*(?P<text>.+)$", re.IGNORECASE
 )
-_FORGET_BARE = re.compile(rf"^{_LEAD}forget\s+(?:that|this|it)$", re.IGNORECASE)
+_FORGET_BARE = re.compile(rf"^{_LEAD}forget\s+(?:that|this)$", re.IGNORECASE)
+_FORGET_IT = re.compile(
+    r"^(?:(?:can you|could you|please|hey|ok|okay|never mind)"
+    r"\s*[,;:]?\s*)*forget\s+it$",
+    re.IGNORECASE,
+)
 _RECALL = re.compile(
     rf"^{_LEAD}(?:what do you remember(?:\s+about me)?|what do you know about me|"
     rf"list your memories|what have you remembered)$",
@@ -123,7 +134,8 @@ def parse_memory_command(text):
     """Return (intent, payload) for an explicit memory command, else None.
 
     Intents: 'remember' (payload=text), 'remember_last' (payload=None),
-    'forget' (payload=text or None), 'recall' (payload=None).
+    'remember_rejected' (payload=None), 'forget' (payload=text or None),
+    'recall' (payload=None).
     Pure: no I/O, no state.
     """
     command = _strip_address(text)
@@ -131,6 +143,12 @@ def parse_memory_command(text):
         return None
     if _RECALL.match(command):
         return ("recall", None)
+    if _FORGET_IT.fullmatch(command):
+        return None
+    if (_REMEMBER_REQUEST.match(command)
+            and ((text or "").rstrip().endswith("?")
+                 or _REMEMBER_REMINISCENCE.match(command))):
+        return ("remember_rejected", None)
     if _REMEMBER_BARE.match(command):
         return ("remember_last", None)
     if _FORGET_BARE.match(command):
@@ -225,6 +243,9 @@ class MemoryStore:
         self.path = Path(path) if path else DEFAULT_PATH
         self.entries = []
         self.load_error = None
+        # Process-local by design: these IDs represent memories added or
+        # upgraded since this MemoryStore was created (TARS startup).
+        self._saved_this_run = set()
         self.load()
 
     # ---- persistence ----
@@ -339,6 +360,7 @@ class MemoryStore:
             if existing["source"] == "inferred" and source == "stated":
                 upgraded = dict(existing, text=text, kind=kind, source="stated", updated=_now())
                 self._commit([upgraded if e is existing else e for e in self.entries])
+                self._saved_this_run.add(upgraded["id"])
                 return upgraded
             return existing
         entry = {
@@ -360,6 +382,8 @@ class MemoryStore:
         if entry not in entries:
             return None
         self._commit(entries)
+        self._saved_this_run.intersection_update(e["id"] for e in self.entries)
+        self._saved_this_run.add(entry["id"])
         return entry
 
     def forget(self, text):
@@ -368,6 +392,7 @@ class MemoryStore:
         if entry is None:
             return None
         self._commit([e for e in self.entries if e is not entry])
+        self._saved_this_run.discard(entry["id"])
         return entry
 
     def forget_last(self):
@@ -375,7 +400,24 @@ class MemoryStore:
             return None
         _, entry = max(enumerate(self.entries), key=lambda pair: (pair[1]["updated"], pair[0]))
         self._commit([e for e in self.entries if e is not entry])
+        self._saved_this_run.discard(entry["id"])
         return entry
+
+    def forget_last_saved_this_run(self):
+        candidates = [(index, entry) for index, entry in enumerate(self.entries)
+                      if entry["id"] in self._saved_this_run]
+        if not candidates:
+            return None
+        _, entry = max(candidates, key=lambda pair: (pair[1]["updated"], pair[0]))
+        self._commit([e for e in self.entries if e is not entry])
+        self._saved_this_run.discard(entry["id"])
+        return entry
+
+    def latest(self):
+        if not self.entries:
+            return None
+        return max(enumerate(self.entries),
+                   key=lambda pair: (pair[1]["updated"], pair[0]))[1]
 
     # ---- retrieval ----
 
@@ -468,6 +510,10 @@ def handle_memory_turn(store, user_input, last_reply=None):
         if intent == "recall":
             return (f"Luca asked what you remember. Say briefly: {store.spoken_summary()}. "
                     "Flag anything marked not confirmed as a guess.")
+        if intent == "remember_rejected":
+            return ("Nothing was saved. Luca's wording was a question or reminiscence, "
+                    "not a memory command. Do not claim you remembered it; answer him "
+                    "normally.")
         if intent == "remember":
             entry = store.add(payload, kind="fact", source="stated")
             if entry is None:
@@ -482,13 +528,28 @@ def handle_memory_turn(store, user_input, last_reply=None):
             return "Luca saved that line of yours as a running joke. Acknowledge it briefly."
         if intent == "forget":
             try:
-                entry = store.forget(payload) if payload else store.forget_last()
+                entry = (store.forget(payload) if payload
+                         else store.forget_last_saved_this_run())
             except AmbiguousMemory:
                 return ("Several memories match. Nothing was deleted. Ask Luca to repeat "
                         "the forget request with the exact memory text or a unique description.")
-            if entry is None:
+            if entry is not None:
+                if payload is not None:
+                    return (f"Luca asked you to forget: {entry['text']}. It is deleted. "
+                            "Confirm briefly.")
+                return ("The memory was deleted. Deleted memory text: "
+                        f"\"{entry['text']}\". Tell Luca exactly what you forgot.")
+            if payload is not None:
                 return "Luca asked you to forget something you do not have. Say so plainly."
-            return f"Luca asked you to forget: {entry['text']}. It is deleted. Confirm briefly."
+            latest = store.latest()
+            if latest is None:
+                return "No memory was deleted because there are no stored memories. Say so plainly."
+            updated = datetime.fromisoformat(latest["updated"]).astimezone()
+            date = f"{updated.strftime('%B')} {updated.day}, {updated.year}"
+            return ("Nothing was deleted because no memory was saved during this run. "
+                    f"The most recent stored memory is \"{latest['text']}\", from {date}. "
+                    f"Tell Luca to say exactly \"forget that {latest['text']}\" if he "
+                    "wants it removed.")
 
     saved = [store.add(item["text"], kind=item["kind"], source="inferred")
              for item in infer_memories(user_input)]
