@@ -427,3 +427,37 @@ rejects trivia is measured separately (below).
    - "What do you remember?" lists the note with the correct label.
    - Disposable entries are removed afterward, so the real store keeps only what
      Luca wants.
+
+## Implementation notes (phase 1)
+
+Phase 1 builds the standalone parts in `memory_notes.py`: the worker, schema,
+secret guard, check-in state, and marker filter. It also adds `sentences.py`,
+the splitter now shared with `tars_voice.py`. `memory.py`, `brain.py`, and
+`personality.py` are untouched until the honesty guard lands; phase 2 wires
+everything in.
+
+Deviations from revision 4, all engineering:
+
+- **Pending check-in.** It stays in memory, not in the state file. It is valid
+  only for the next turn of the same wake session, so a restart should end it
+  anyway.
+- **Output cap.** `max_tokens` is 120 instead of 80. A 240-character `add` plus
+  its JSON can exceed 80 tokens. The rubric asks for notes under 150
+  characters, and a truncated response is treated as `none`.
+- **Model ID.** The model is `claude-haiku-4-5`, the current alias for the
+  Haiku 4.5 snapshot.
+- **No strict tool use.** The request does not set `strict: true` on the
+  tool, so it cannot fail on model support for strict tools. Local validation
+  is authoritative either way.
+- **PIN.** "Pin" alone is usually hardware here ("GPIO pin 18"). Only these
+  count as credentials:
+  - "PIN number" or "PIN code";
+  - "my PIN", "bank PIN", "card PIN", "debit PIN", "ATM PIN", "phone PIN", or
+    "SIM PIN";
+  - "pin" followed by four or more digits.
+- **OTP and 2FA.** A bare "OTP" or "2FA" mention is allowed. "OTP code" and
+  "2FA code" are blocked.
+- **Extra fields on `none`.** They are ignored without a diagnostic line,
+  because they cannot change anything.
+- **Partial markers.** A partial marker such as `[che` at the end of a reply is
+  suppressed rather than spoken.

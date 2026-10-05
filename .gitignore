@@ -224,3 +224,6 @@ wakeword/
 /memory.json
 /memory.corrupt*.json
 /memory.json.*.tmp
+/memory-state.json
+/memory-state.json.*.tmp
+/memory-state.corrupt*.json
