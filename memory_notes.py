@@ -6,8 +6,8 @@ local and deterministic: the action schema, the secret guard, the daily
 check-in allowance, and the check-in marker filter. The model only proposes.
 
 This module never touches the audio device and never holds the memory lock
-during a model request. The store integration supplies `memory_block` (a
-bounded snapshot) and `apply` (a locked, epoch-checked mutation).
+during a model request. Each job carries the exact memory block its reply
+used; the store integration supplies `apply` (a locked, epoch-checked mutation).
 """
 
 from dataclasses import dataclass
@@ -22,7 +22,7 @@ import threading
 import uuid
 from typing import Optional
 
-from memory import MAX_ENTRY_CHARS, _normalize
+from memory import MAX_ENTRY_CHARS, MAX_PROMPT_CHARS, _normalize
 from sentences import split_sentences
 
 
@@ -60,6 +60,9 @@ class TurnRecord:
     epoch: int
     memory_command: bool = False
     checkin: Optional[PendingCheckin] = None
+    # The same bounded block the reply request sent, frozen at turn time so a
+    # later store change cannot alter what this job sends.
+    memory_block: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -132,19 +135,76 @@ _CREDENTIAL_TERMS = re.compile(
     r"|api keys?|access tokens?|auth tokens?|(?:secret|private) keys?"
     r"|(?:recovery|seed) phrases?)\b"
 )
-_CODE_IN_CONTEXT = re.compile(
-    r"\b(?:(\w+) )?(code|combination|combo|pin)s?(?: number)?\s*(?:is|was|:|=)?\s*"
-    r"([a-z0-9][a-z0-9-]*)"
-)
+_SECRET_WORDS = {"code", "codes", "combination", "combo", "pin", "passcode", "password"}
+_CONNECTORS = {"is", "was", "are", ":", "="}
 _CODE_EXEMPT = {"zip", "postal", "area", "error", "status", "course", "class"}
+_CONTEXT_WINDOW = 6
+_TEENS = {"ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+          "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
+          "nineteen": "19"}
+_TENS = {"twenty": "2", "thirty": "3", "forty": "4", "fifty": "5", "sixty": "6",
+         "seventy": "7", "eighty": "8", "ninety": "9"}
 
 
 def _normalized(text):
-    text = text.lower()
+    text = text.lower().replace("\u2019", "'")
+    text = re.sub(r"'s\b", " is", text)
+    # Spoken numbers: "twelve thirty four" and "four eight two one" become digits.
+    text = re.sub(r"\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+                  r"(?:[ -](one|two|three|four|five|six|seven|eight|nine))?\b",
+                  lambda m: _TENS[m.group(1)] + (_SPOKEN_DIGITS[m.group(2)] if m.group(2) else "0"),
+                  text)
+    text = re.sub(r"\b(" + "|".join(_TEENS) + r")\b", lambda m: _TEENS[m.group(1)], text)
     text = re.sub(r"\b(zero|one|two|three|four|five|six|seven|eight|nine)\b",
                   lambda m: _SPOKEN_DIGITS[m.group(1)], text)
     # Join digit groups so "4111 1111 1111 1111" and "4 8 2 1" become runs.
-    return re.sub(r"(?<=\d)[ .-]+(?=\d)", "", text)
+    text = re.sub(r"(?<=\d)[ .-]+(?=\d)", "", text)
+    # Join spelled-out codes such as "a 7 x 9" when they mix letters and digits.
+    return re.sub(r"\b(?:[a-z0-9] ){3,}[a-z0-9]\b",
+                  lambda m: (m.group().replace(" ", "")
+                             if re.search(r"\d", m.group()) and re.search(r"[a-z]", m.group())
+                             else m.group()), text)
+
+
+def _secret_value(token):
+    digits = sum(c.isdigit() for c in token)
+    letters = sum(c.isalpha() for c in token)
+    return digits >= 4 or (digits >= 1 and letters >= 1 and len(token) >= 4)
+
+
+def _keyword_at(tokens, index):
+    return (tokens[index] in _SECRET_WORDS
+            and not (index and tokens[index - 1] in _CODE_EXEMPT))
+
+
+def _code_in_context(norm):
+    """A code-like value tied to a code word, in either order.
+
+    "pin 4821", "the code to the safe is 1234", "the PIN for my card is: 4821",
+    and "4821 is the door code" match. "I wrote code in 2026" and "GPIO pin 18"
+    do not: a value needs four or more digits, or letters and digits together,
+    and a separated value needs a connector such as "is" or ":".
+    """
+    tokens = re.findall(r"[a-z0-9][a-z0-9-]*|[:=]", norm)
+    for i in range(len(tokens)):
+        if not _keyword_at(tokens, i):
+            continue
+        if i + 1 < len(tokens) and _secret_value(tokens[i + 1]):
+            return True
+        for j in range(i + 1, min(i + 1 + _CONTEXT_WINDOW, len(tokens))):
+            if tokens[j] in _CONNECTORS:
+                k = j
+                while k < len(tokens) and tokens[k] in _CONNECTORS:
+                    k += 1
+                if k < len(tokens) and _secret_value(tokens[k]):
+                    return True
+                break
+    for i in range(len(tokens) - 1):
+        if _secret_value(tokens[i]) and tokens[i + 1] in _CONNECTORS:
+            if any(_keyword_at(tokens, j)
+                   for j in range(i + 2, min(i + 2 + _CONTEXT_WINDOW, len(tokens)))):
+                return True
+    return False
 
 
 def _luhn(digits):
@@ -166,16 +226,11 @@ def _secret_in(text):
     if _SSN.search(text) or _KEY_PREFIX.search(text):
         return True
     norm = _normalized(text)
-    if _CREDENTIAL_TERMS.search(norm):
+    # Terms such as "one-time code" are matched before number words become digits.
+    if _CREDENTIAL_TERMS.search(text.lower()) or _CREDENTIAL_TERMS.search(norm):
         return True
-    for match in _CODE_IN_CONTEXT.finditer(norm):
-        before, value = match.group(1), match.group(3)
-        if before in _CODE_EXEMPT:
-            continue
-        digits = sum(c.isdigit() for c in value)
-        letters = sum(c.isalpha() for c in value)
-        if digits >= 4 or (digits and letters and len(value) >= 4):
-            return True
+    if _code_in_context(norm):
+        return True
     return any(13 <= len(run) <= 19 and _luhn(run) for run in re.findall(r"\d+", norm))
 
 
@@ -226,21 +281,47 @@ class CheckinState:
         except OSError:
             self._disable("Check-in state could not be read; check-ins are off for this run.")
             return
-        try:
-            used = {date.fromisoformat(d) for d in raw["used_dates"]}
-            reservation = raw.get("reservation")
-            if reservation is not None:
-                reservation = {"date": date.fromisoformat(reservation["date"]),
-                               "candidates": list(reservation["candidates"])}
-        except (KeyError, TypeError, ValueError, AttributeError):
+        parsed = self._parse(raw)
+        if parsed is None:
             self._recover_corrupt()
             return
+        used, reservation = parsed
         self.used = used
         if reservation is not None:
             # A reservation left by a crash may have asked a question that
             # played past midnight, so consume both its date and today's.
             self.used |= {reservation["date"], self._today()}
             self._write()
+
+    @staticmethod
+    def _date(value):
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("not a YYYY-MM-DD date")
+        return date.fromisoformat(value)
+
+    def _parse(self, raw):
+        """Return (used dates, reservation) only for the exact expected shape.
+
+        Anything else is corruption. Accepting a string, an empty mapping, or a
+        partial record as "nothing used" would silently reopen today's check-in.
+        """
+        if not isinstance(raw, dict) or set(raw) != {"version", "used_dates", "reservation"}:
+            return None
+        if raw["version"] != 1 or not isinstance(raw["used_dates"], list):
+            return None
+        reservation = raw["reservation"]
+        try:
+            used = {self._date(value) for value in raw["used_dates"]}
+            if reservation is not None:
+                if (not isinstance(reservation, dict)
+                        or set(reservation) != {"date", "candidates"}
+                        or not isinstance(reservation["candidates"], list)):
+                    return None
+                reservation = {"date": self._date(reservation["date"]),
+                               "candidates": reservation["candidates"]}
+        except ValueError:
+            return None
+        return used, reservation
 
     def _recover_corrupt(self):
         broken = self.path.with_name(f"memory-state.corrupt.{uuid.uuid4().hex}.json")
@@ -439,9 +520,21 @@ def _cap(text, limit):
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def build_request(record, memory_block):
+def _bounded_block(block):
+    """Keep whole memory lines within the reply prompt's character budget."""
+    lines, used = [], 0
+    for line in (block or "").splitlines():
+        cost = len(line) + bool(lines)
+        if used + cost > MAX_PROMPT_CHARS:
+            break
+        lines.append(line)
+        used += cost
+    return "\n".join(lines)
+
+
+def build_request(record):
     """Bounded request: a fixed rubric plus data the reply request already sent."""
-    parts = [f"<memory>\n{memory_block or '(empty)'}\n</memory>"]
+    parts = [f"<memory>\n{_bounded_block(record.memory_block) or '(empty)'}\n</memory>"]
     if record.checkin is not None:
         parts.append("<check_in>\n"
                      f"TARS asked: {_cap(record.checkin.question, MAX_CHECKIN_CHARS)}\n"
@@ -479,15 +572,13 @@ def action_from_response(response, checkin_pending=False):
 class NoteTaker:
     """One background thread; at most one queued job; failures change nothing.
 
-    `memory_block()` must return a bounded snapshot taken under the store
-    lock. `apply(record, action, stopped)` must take the store lock, drop the
-    result if `stopped()` is true or the record's epoch is stale, apply it, and
-    return a short outcome word. Neither may be called with the lock held here.
+    `apply(record, action, stopped)` must take the store lock, drop the result
+    if `stopped()` is true or the record's epoch is stale, apply it, and return
+    a short outcome word. The worker never holds the lock itself.
     """
 
-    def __init__(self, client, memory_block, apply, log=print):
+    def __init__(self, client, apply, log=print):
         self._client = client
-        self._memory_block = memory_block
         self._apply = apply
         self._log = log
         self._queue = queue.Queue(maxsize=1)
@@ -537,7 +628,7 @@ class NoteTaker:
                     self._busy_lock.notify_all()
 
     def _process(self, record):
-        request = build_request(record, self._memory_block())
+        request = build_request(record)
         try:
             response = self._client.messages.create(**request)
         except Exception as exc:

@@ -96,6 +96,16 @@ class SecretGuardTests(unittest.TestCase):
         "Use the key sk-ant-api03-abcdefghijklmnop",
         "token ghp_abcdefghijklmnopqrstuvwxyz123456",
         "my seed phrase is in the drawer",
+        # Credential context separated from the value, reversed, or spoken.
+        "The PIN for my card is 4821.",
+        "The code to the safe is 1234.",
+        "the code is: 4 8 2 1",
+        "4821 is the door code",
+        "The code's 4821.",
+        "My garage code is twelve thirty four.",
+        "the gate code is a 7 x 9 k",
+        "the one-time code was 551204",
+        "my two-factor code is 123456",
     ]
     ALLOWED = [
         "My phone number is 555 123 4567.",
@@ -113,6 +123,13 @@ class SecretGuardTests(unittest.TestCase):
         "Connect the servo signal wire to GPIO pin 18.",
         "The header has 40 pins.",
         "I'm building TARS a body.",
+        "I wrote code for twenty minutes.",
+        "Pin 18 is the signal pin.",
+        "I'll be there at twelve thirty.",
+        "94110 is my zip code.",
+        "My zip code's 94110.",
+        "I have twenty two servos.",
+        "Is the code done? 2026 was a good year.",
     ]
 
     def test_blocked_examples(self):
@@ -234,8 +251,25 @@ class CheckinStateTests(unittest.TestCase):
         self.assertFalse(self.state().available())
 
     def test_corrupt_state_is_quarantined_and_today_is_used(self):
-        for bad in ("{not json", json.dumps({"used_dates": "2026-10-05"}),
-                    json.dumps({"version": 1, "used_dates": ["yesterday"]}), json.dumps([1])):
+        good = {"version": 1, "used_dates": [], "reservation": None}
+        bad_values = [
+            "{not json", json.dumps([1]), json.dumps({}),
+            json.dumps({**good, "used_dates": ""}),
+            json.dumps({**good, "used_dates": {}}),
+            json.dumps({**good, "used_dates": {"2026-10-05": True}}),
+            json.dumps({**good, "used_dates": "2026-10-05"}),
+            json.dumps({**good, "used_dates": ["yesterday"]}),
+            json.dumps({**good, "used_dates": ["2026-10-5"]}),
+            json.dumps({**good, "used_dates": ["20261005"]}),
+            json.dumps({**good, "used_dates": [20261005]}),
+            json.dumps({**good, "version": 2}),
+            json.dumps({"version": 1, "used_dates": []}),
+            json.dumps({**good, "extra": 1}),
+            json.dumps({**good, "reservation": "2026-10-05"}),
+            json.dumps({**good, "reservation": {"date": "2026-10-05", "candidates": "c1"}}),
+            json.dumps({**good, "reservation": {"date": "2026-10-05"}}),
+        ]
+        for bad in bad_values:
             with self.subTest(bad=bad):
                 for old in Path(self.tmp.name).glob("memory-state.corrupt.*.json"):
                     old.unlink()
@@ -365,6 +399,7 @@ def tool_response(payload):
 class NoteTakerTests(unittest.TestCase):
     def make(self, responses, gate=None, block="- [CONFIRMED] Luca likes PETG"):
         self.client = SimpleNamespace(messages=FakeMessages(responses, gate))
+        self.block = block
         self.logs = []
         self.applied = []
         self.lock = threading.Lock()
@@ -376,17 +411,13 @@ class NoteTakerTests(unittest.TestCase):
                 self.applied.append((record, action))
                 return "saved"
 
-        def memory_block():
-            with self.lock:
-                return block
-
-        taker = NoteTaker(self.client, memory_block, apply, log=self.logs.append)
+        taker = NoteTaker(self.client, apply, log=self.logs.append)
         self.addCleanup(taker.stop)
         return taker
 
     def record(self, **kwargs):
         values = {"utterance": "I'm getting a 3D printer around November 13.",
-                  "reply": "Good. Then I get a body.", "epoch": 3}
+                  "reply": "Good. Then I get a body.", "epoch": 3, "memory_block": self.block}
         values.update(kwargs)
         return TurnRecord(**values)
 
@@ -401,7 +432,8 @@ class NoteTakerTests(unittest.TestCase):
         self.assertEqual(self.logs, ["[memory note] add: saved"])
 
     def test_request_is_bounded_and_forced(self):
-        request = build_request(self.record(utterance="u" * 5000, reply="r" * 5000), "- [CONFIRMED] x")
+        self.block = "- [CONFIRMED] x"
+        request = build_request(self.record(utterance="u" * 5000, reply="r" * 5000))
         self.assertEqual(request["model"], notes.NOTE_MODEL)
         self.assertEqual(request["max_tokens"], notes.NOTE_MAX_TOKENS)
         self.assertEqual(request["tool_choice"], {"type": "tool", "name": notes.TOOL_NAME})
@@ -410,9 +442,40 @@ class NoteTakerTests(unittest.TestCase):
         self.assertIn("- [CONFIRMED] x", content)
         self.assertNotIn("<check_in>", content)
         pending = PendingCheckin("m_1", "rev", "Luca is getting a printer", "Still the plan?")
-        content = build_request(self.record(checkin=pending), None)["messages"][0]["content"]
+        self.block = None
+        content = build_request(self.record(checkin=pending))["messages"][0]["content"]
         self.assertIn("TARS asked: Still the plan?", content)
         self.assertIn("(empty)", content)
+
+    def test_memory_block_is_bounded_to_whole_lines(self):
+        line = "- [CONFIRMED] Luca likes " + "x" * 60
+        self.block = "\n".join([line] * 200)  # about 17,000 characters
+        content = build_request(self.record())["messages"][0]["content"]
+        block = content.split("<memory>\n", 1)[1].split("\n</memory>", 1)[0]
+        self.assertLessEqual(len(block), notes.MAX_PROMPT_CHARS)
+        self.assertTrue(all(row == line for row in block.splitlines()))
+        self.block = "y" * 10_000  # one oversized line is dropped, never cut
+        content = build_request(self.record())["messages"][0]["content"]
+        self.assertIn("<memory>\n(empty)\n</memory>", content)
+
+    def test_waiting_job_sends_its_own_turn_memory_not_newer_contents(self):
+        gate = threading.Event()
+        taker = self.make([tool_response({"action": "none"})] * 2, gate=gate,
+                          block="- [CONFIRMED] first turn memory")
+        taker.submit(self.record())
+        for _ in range(100):
+            if self.client.messages.requests:
+                break
+            threading.Event().wait(0.01)
+        waiting = self.record(memory_block="- [CONFIRMED] second turn memory")
+        self.assertTrue(taker.submit(waiting))
+        self.block = "- [CONFIRMED] changed after the turn"  # the store moves on
+        gate.set()
+        self.assertTrue(taker.wait_idle(2))
+        sent = [r["messages"][0]["content"] for r in self.client.messages.requests]
+        self.assertIn("first turn memory", sent[0])
+        self.assertIn("second turn memory", sent[1])
+        self.assertFalse(any("changed after the turn" in text for text in sent))
 
     def test_failures_change_nothing_and_never_log_text(self):
         secret_note = {"action": "add", "kind": "fact", "text": "Luca's PIN is 4821"}

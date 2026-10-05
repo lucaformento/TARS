@@ -461,3 +461,32 @@ Deviations from revision 4, all engineering:
   because they cannot change anything.
 - **Partial markers.** A partial marker such as `[che` at the end of a reply is
   suppressed rather than spoken.
+
+After Codex's phase 1 review:
+
+- **Secret guard.** The guard now ties a code word to a value instead of
+  requiring them to be adjacent.
+  - Code words: "code", "combination", "combo", "PIN", "passcode", and
+    "password".
+  - Matching values: four or more digits, or letters and digits together,
+    written as numerals or spoken ("twelve thirty four", "a 7 x 9").
+  - Allowed positions: right after the code word ("pin 4821"); after a
+    connector such as "is", ":", or "'s" within six words ("the code to the
+    safe is 1234", "the PIN for my card is 4821"); or before the code word
+    ("4821 is the door code").
+  - Credential terms such as "one-time code" are matched before number words
+    become digits.
+  - Accepted false positive: a sentence like "the code is 1000 lines" is not
+    saved as a quiet note.
+- **Check-in state shape.** The file must have exactly the expected keys,
+  version 1, a list of `YYYY-MM-DD` strings, and a well-formed reservation.
+  Anything else is quarantined as corrupt and today counts as used. A string,
+  an empty mapping, or a partial record therefore cannot reopen the allowance.
+- **Frozen memory block.** Each `TurnRecord` carries the memory block its reply
+  used. `build_request` keeps whole lines within the 1,200-character prompt
+  budget and drops any single oversized line. A job waiting in the queue
+  therefore never sends newer store contents.
+- **Phase 2 requirement.** Every guarded memory attempt (an unparsed
+  remember/forget mention, or a forget that deletes nothing) counts as a memory
+  command. It skips the note job and increments the command epoch, even when
+  memory is unchanged.
