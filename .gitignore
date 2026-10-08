@@ -227,3 +227,7 @@ wakeword/
 /memory-state.json
 /memory-state.json.*.tmp
 /memory-state.corrupt*.json
+
+# Personality dials kept across restarts
+/personality-state.json
+/personality-state.json.*.tmp

@@ -25,7 +25,7 @@ flowchart LR
     llm --> split["Sentence splitter"]
     split --> worker["Lookahead worker<br/>downloads sentence N+1"]
     worker --> play["Main thread<br/>owns output device<br/>plays sentence N"]
-    play -. "restart capture,<br/>follow-up window" .-> cap
+    play -. "restart capture,<br/>conversation window" .-> cap
 ```
 
 One turn:
@@ -40,14 +40,20 @@ One turn:
    capture; a damaged capture is never transcribed — TARS asks for a repeat.
 3. **Transcribe.** Capture is **stopped** for STT, generation, and playback.
    This prevents USB input overruns and speaker echo, at the cost of
-   interruption (see [limitations](#limitations)).
+   interruption (see [limitations](#limitations)). Whisper gets a vocabulary
+   hint (TARS, the mode and dial names), and the name is always written TARS.
 4. **Generate.** The brain rebuilds the system prompt on every request from
    current dial values, a bounded memory block, and an optional one-turn
    control event, then streams text deltas.
 5. **Speak.** Deltas are split into sentences. A worker thread downloads
    sentence N+1 as complete PCM while the main thread plays sentence N; it never
-   prepares two ahead. After the reply, capture restarts with a clean buffer and
-   an 8 s follow-up window (no wake word needed).
+   prepares two ahead. After the reply, capture restarts with a clean buffer.
+6. **Stay in the conversation.** For 30 s after each reply TARS answers
+   anything, with no wake word. Then he keeps listening but answers only
+   sentences that include "TARS" ("what do you think, TARS?"); everything else
+   is transcribed locally and dropped. "Go to sleep", or 10 minutes without
+   anyone talking to him, returns him to wake-word standby with a short spoken
+   line. Coughs, laughs, and blank transcripts never end a conversation.
 
 ## Design decisions
 
@@ -137,12 +143,26 @@ guess can never silently become a fact.
 ## Personality
 
 Four dials (0–100) are injected as style guidance, never recited unless asked:
-humor (75), sarcasm (60), honesty (90), intellect (50). Commands are parsed
-locally from text or speech, including spoken numbers: `set humor to ninety`,
-`buddy mode`, `know-it-all`, `what are your settings`, `reset`. Presets,
-resets, and setting queries must be the whole utterance, and dial changes need
-an explicit "set/change/turn … to N" form, so ordinary speech that merely
-mentions "settings" or "humor" does not trigger a control event.
+humor (75), sarcasm (60), honesty (90), intellect (50). Two presets set all
+four: **buddy mode** (90/70/80/20) and **know-it-all** (20/30/100/95). The
+current mode (baseline, a preset, or custom) is named in the prompt, and
+changes are kept in `personality-state.json` (outside Git) until reset.
+
+Commands are parsed locally from text or speech, so they are instant and free:
+
+| Say | Effect |
+| :--- | :--- |
+| `set humor to ninety`, `make your humour 90`, `humor 90%` | Set one dial |
+| `be funnier`, `less sarcastic`, `turn your humor up` | Move one dial by 10 |
+| `switch to buddy mode`, `turn on know-it-all mode` | Switch preset |
+| `turn off buddy mode`, `back to normal`, `reset your settings` | Baseline |
+| `what mode are you in`, `what are your settings` | Read them out |
+
+A leading "Hey TARS," and politeness ("can you … please") are fine. Apart from
+"set … to N", a command must be the whole utterance, so ordinary speech that
+merely mentions "humor" or "settings" changes nothing. Wording that sounds like
+a settings request but does not parse gets an honest control note: nothing
+changed, plus a phrase that works.
 
 ## Measured performance
 
@@ -180,6 +200,8 @@ synthesis from ~2.1 s to 0.05 s for a short line
   are sanitized before display.
 - Opt-in capture diagnostics (`--capture-diagnostics`) refuse any path inside
   the repository and write WAV/JSON files with `0700`/`0600` permissions.
+- While TARS waits for his name, overheard sentences that do not include it are
+  transcribed locally and dropped: never printed, saved, or sent anywhere.
 
 ## Hardware and stack
 
@@ -196,13 +218,14 @@ synthesis from ~2.1 s to 0.05 s for a short line
 
 | Path | Responsibility |
 | :--- | :--- |
-| [`tars_voice.py`](tars_voice.py) | Voice front end: capture, endpointing, wake/follow-up loop, sentence lookahead, recovery, diagnostics |
+| [`tars_voice.py`](tars_voice.py) | Voice front end: capture, endpointing, wake and name-aware conversation loop, sentence lookahead, recovery, diagnostics |
+| [`transcript.py`](transcript.py) | Pure transcript handling: Whisper hint, TARS spelling, addressing and "go to sleep" |
 | [`cloud_speech.py`](cloud_speech.py) | ElevenLabs client: bounded PCM download, playback, cancellation; voice list/audition/configure CLI |
 | [`brain.py`](brain.py) | Request construction, streaming, history consistency, model selection |
 | [`memory.py`](memory.py) | Memory store, command parsing, inference, bounded retrieval |
 | [`personality.py`](personality.py) | Pure prompt building and dial/preset command parsing |
 | [`tars.py`](tars.py) | Terminal front end for the same brain |
-| [`tests/`](tests) | 113 offline tests with fake devices, network, and models |
+| [`tests/`](tests) | 252 offline tests with fake devices, network, and models |
 | [`docs/`](docs) | Decision record, measurements, and design notes |
 
 ## Running it
@@ -260,13 +283,20 @@ python -m unittest discover -s tests
   just" are fine), and Whisper sometimes hears "forget them," which never
   deletes. Whether the note-taker rejects trivia is judged in live use, not by
   the offline tests.
-- Conversation history is process-local; only memory persists across restarts.
+- While TARS waits for his name, capture pauses for about a second to
+  transcribe each overheard sentence, so a name spoken right after someone
+  else stops can be clipped.
+- Memory notes assume the speaker is Luca; a guest's facts can be noted as
+  unconfirmed guesses about him (check-ins let him reject them).
+- Conversation history is process-local; memory and personality settings
+  persist across restarts.
 - Model and device paths are configured for this Pi; a portable install script
   and lockfile do not exist yet.
 
 ## Roadmap
 
 - [x] Wake word, follow-up loop, and streamed sentence speech
+- [x] Name-aware conversation flow and forgiving personality commands (pending live acceptance)
 - [x] One-sentence lookahead with zero-gap transitions
 - [x] Persistent memory with confirmed/inferred provenance
 - [x] Turn-level failure recovery, verified under a live network outage

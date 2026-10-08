@@ -248,5 +248,36 @@ class CaptureTests(unittest.TestCase):
             self.assertNotEqual(path, base)
 
 
+
+class StandbyLineCacheTests(unittest.TestCase):
+    def voice(self, speed=0.92):
+        voice = MagicMock(voice_id="voice", model_id="model", speed=speed, volume=0.85)
+        voice.prepare_text.side_effect = lambda text: text
+        voice.prepare.side_effect = lambda text: voice_frontend.PreparedSpeech(
+            text=text, pcm=b"\x01\x00" * 4, stats={"prepare_s": 0.5})
+        return voice
+
+    def test_line_is_downloaded_once_then_reused_from_disk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = self.voice()
+            prepared = voice_frontend.cached_phrase(first, "Standing by.", folder)
+            self.assertEqual(prepared.pcm, b"\x01\x00" * 4)
+            first.begin_response.assert_called_once_with()
+
+            later = self.voice()
+            reused = voice_frontend.cached_phrase(later, "Standing by.", folder)
+            later.prepare.assert_not_called()
+            self.assertEqual(reused.pcm, prepared.pcm)
+            self.assertEqual(reused.stats["prepare_s"], 0.0)
+
+    def test_a_new_delivery_setting_downloads_a_new_line(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice_frontend.cached_phrase(self.voice(), "Standing by.", folder)
+            slower = self.voice(speed=0.8)
+            voice_frontend.cached_phrase(slower, "Standing by.", folder)
+            slower.prepare.assert_called_once_with("Standing by.")
+            self.assertEqual(len(list(Path(folder).glob("*.pcm"))), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

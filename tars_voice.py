@@ -1,13 +1,15 @@
 """Voice front-end for TARS.
 
-Wake word starts a conversation; after that he keeps listening until you
-go quiet for a while, so follow-ups need no wake word.
+"Hey TARS" starts a conversation. He answers everything until it pauses, then
+only sentences that include his name. "Go to sleep", or ten minutes without
+anyone talking to him, returns him to wake-word standby.
 """
 
 import argparse
 from contextlib import closing, contextmanager, ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,9 +27,11 @@ from statistics import median
 
 import numpy as np
 import sounddevice as sd
-from cloud_speech import (CloudSpeechError, ElevenLabsVoice, MODELS, NAME_TEST,
+from cloud_speech import (CloudSpeechError, ElevenLabsVoice, MODELS, NAME_TEST, PreparedSpeech,
                           SpeechPreparationCancelled, load_environment)
 from sentences import split_sentences
+from transcript import (STT_HOTWORDS, clean_transcript, is_bare_address, is_sleep_command,
+                        mentions_tars)
 
 WAKE_MODEL = "/home/lucadev/TARS/wakeword/hey_tars.onnx"
 MELSPEC_MODEL = "/home/lucadev/TARS/wakeword/melspectrogram.onnx"
@@ -54,8 +58,11 @@ MAX_UTTERANCE = 30.0      # long enough for a natural thought; still bounds nois
 MIN_SPEECH = 0.4          # minimum accumulated above-threshold speech
 PRE_ROLL = 0.5            # audio retained before the first above-threshold frame
 TAIL_PAD = 0.5            # quiet audio retained after the final loud frame
-FIRST_WAIT = 6.0          # after the wake word, how long to wait for you
-FOLLOWUP_WAIT = 8.0       # after he answers, how long before he sleeps
+FIRST_WAIT = 6.0          # after the wake word or a bare "TARS", how long to wait for you
+ENGAGED_WAIT = 30.0       # after he answers, how long he answers without hearing his name
+IDLE_LIMIT = 600.0        # without anyone talking to him, how long before standby
+SLEEP_LINE = "Standing by."  # spoken on return to standby; wording is Luca's call
+PHRASE_CACHE = Path.home() / ".cache" / "tars" / "phrases"
 INPUT_BUFFER_SECONDS = 3.0  # keep draining USB while wake inference briefly stalls
 LUCA_PRONUNCIATION = "[[\u02c8lu\u02d0ka]]"  # Italian: LOO-kah, stress first
 
@@ -295,9 +302,19 @@ def stt_settings():
 def warm_stt(stt, beam=STT_BEAM):
     """Run and fully consume one silent transcription before live speech."""
     silence = np.zeros(SR // 2, dtype=np.float32)
-    segments, _ = stt.transcribe(silence, language="en", beam_size=beam)
+    segments, _ = stt.transcribe(silence, language="en", beam_size=beam, hotwords=STT_HOTWORDS)
     for _ in segments:
         pass
+
+
+def transcribe(stt, clip, beam=STT_BEAM):
+    """Return (text, segments, info, seconds), with TARS's name spelled TARS."""
+    started = time.perf_counter()
+    segment_iter, info = stt.transcribe(clip, language="en", beam_size=beam,
+                                        hotwords=STT_HOTWORDS)
+    segments = list(segment_iter)
+    heard = clean_transcript(" ".join(segment.text for segment in segments).strip())
+    return heard, segments, info, time.perf_counter() - started
 
 
 @contextmanager
@@ -468,6 +485,40 @@ def speak(voice, text):
     return (playback_requested_at - t0,
             playback_finished_at - playback_requested_at,
             playback_requested_at)
+
+
+def cached_phrase(voice, text, directory=PHRASE_CACHE):
+    """Return a fixed cloud line, downloaded once per voice and delivery setting."""
+    spoken = voice.prepare_text(text)
+    key = hashlib.sha256(json.dumps(
+        [voice.voice_id, voice.model_id, voice.speed, voice.volume, spoken]
+    ).encode("utf-8")).hexdigest()[:32]
+    path = Path(directory) / f"{key}.pcm"
+    try:
+        pcm = path.read_bytes()
+    except OSError:
+        pcm = b""
+    if pcm:
+        return PreparedSpeech(text=spoken, pcm=pcm, stats={"prepare_s": 0.0})
+    voice.begin_response()  # a standalone line, not a continuation of the last reply
+    prepared = voice.prepare(text)
+    if prepared is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_suffix(".tmp")
+            partial.write_bytes(prepared.pcm)
+            os.replace(partial, path)
+        except OSError:
+            pass  # still plays now; the next standby downloads it again
+    return prepared
+
+
+def say_sleep_line(voice):
+    """Speak the standby line. Piper is local; cloud audio is reused from disk."""
+    if isinstance(voice, ElevenLabsVoice):
+        voice.ensure_output()
+        return voice.play(cached_phrase(voice, SLEEP_LINE))
+    return speak(voice, SLEEP_LINE)
 
 
 def _stream_metrics(cloud):
@@ -768,6 +819,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
     stt = WhisperModel(stt_model, device="cpu", compute_type="int8")
     tars = TARS(model=brain_model, voice=True)  # short, speech-shaped replies
     notes_on = tars.enable_memory_notes()
+    mode = tars.enable_saved_settings()
 
     print("Warming speech recognition...")
     warm_started = time.perf_counter()
@@ -779,6 +831,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
         print(f"Memory notes: {'on' if notes_on else 'off'}")
     else:
         print("Speech recognition ready.")
+    print(f"Personality: {mode} (say \"reset your settings\" for baseline)")
     if diagnostic_dir is not None:
         print(
             "DIAGNOSTIC CAPTURE ENABLED: microphone WAVs and transcripts will be "
@@ -796,12 +849,29 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
         print("Calibrating room noise, stay quiet...")
         threshold = calibrate(input_reader)
         print(f"Threshold: {threshold:.0f}  |  STT: {stt_model}, beam {stt_beam}")
-        print("Say 'hey tars' to start. Ctrl+C to stop.\n")
+        print("Say 'Hey TARS' to start. Ctrl+C to stop.\n")
 
         wake_ready_at = 0.0
         turn = 0
+
+        def standby(cue):
+            """Return to wake-word-only listening, optionally saying the standby line."""
+            nonlocal wake_ready_at
+            if cue:
+                try:
+                    with paused_input(buffered_input):
+                        say_sleep_line(voice)
+                except MicrophoneStreamError:
+                    raise
+                except Exception as exc:
+                    report_turn_failure(exc, diagnostics)
+            print("[sleep]\n")
+            if hasattr(oww, "reset"):
+                oww.reset()
+            wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+
         while True:
-            # --- asleep: nothing but wake-word detection ---
+            # --- standby: nothing but wake-word detection ---
             audio = input_reader.read(FRAME)
             wake_score = max(oww.predict(audio.flatten()).values())
             if time.monotonic() < wake_ready_at or wake_score <= WAKE_THRESHOLD:
@@ -813,20 +883,44 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                 oww.reset()
             # Do not flush here: queued frames can contain the beginning of a
             # natural question spoken immediately after the wake phrase.
-            wait = FIRST_WAIT
+            now = time.monotonic()
+            engaged_until = now + FIRST_WAIT
+            idle_until = now + IDLE_LIMIT
+            waiting_for_name = False
 
-            # --- awake: keep talking until silence sends him back to sleep ---
+            # --- awake: answer everything while engaged; once the conversation
+            # pauses, answer only sentences that name TARS; standby when idle ---
             while True:
+                now = time.monotonic()
+                engaged = now < engaged_until
+                if not engaged and not waiting_for_name:
+                    print("[waiting for 'TARS']")
+                    waiting_for_name = True
+                wait = (engaged_until if engaged else idle_until) - now
+                if wait <= 0:
+                    standby(cue=True)
+                    break
+
                 capture = record_utterance(input_reader, threshold, wait)
                 if capture.clip is None:
                     if diagnostics:
                         print(f"  [capture ended: {capture.endpoint_reason}; "
                               f"input overflows {capture.input_overflows}]")
-                    print("[sleep]\n")
-                    wake_ready_at = time.monotonic() + WAKE_COOLDOWN
-                    break
+                    if capture.endpoint_reason == "speech_timeout":
+                        if not engaged:
+                            standby(cue=True)
+                            break
+                        engaged_until = now  # the conversation paused
+                    # A cough, laugh, or click never ends the conversation.
+                    continue
 
                 if capture.input_overflows:
+                    if not engaged:
+                        # Damaged audio is never transcribed, and it may not have
+                        # been meant for TARS, so asking for a repeat would intrude.
+                        if diagnostics:
+                            print("  [damaged capture ignored while waiting for 'TARS']")
+                        continue
                     # Missing samples can turn a clear question into unrelated
                     # text. Never send known-damaged audio to Whisper or Claude.
                     print("  [audio retry] Part of that recording was lost; please repeat it.")
@@ -837,66 +931,76 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                         raise
                     except Exception as exc:
                         report_turn_failure(exc, diagnostics)
-                        print("[sleep]\n")
-                        if hasattr(oww, "reset"):
-                            oww.reset()
-                        wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                        standby(cue=False)
                         break
-                    wait = FOLLOWUP_WAIT
+                    engaged_until = time.monotonic() + ENGAGED_WAIT
                     continue
 
-                turn += 1
+                outcome = None
                 metrics = None
-                heard = ""
                 try:
                     # Capture stops before CPU-heavy STT, both cloud requests,
                     # and playback. Restarting afterward gives the next turn a
                     # clean buffer and prevents known USB input overruns.
                     with paused_input(buffered_input):
-                        t0 = time.perf_counter()
-                        segment_iter, stt_info = stt.transcribe(capture.clip, language="en",
-                                                                beam_size=stt_beam)
-                        segments = list(segment_iter)
-                        heard = " ".join(segment.text for segment in segments).strip()
-                        stt_s = time.perf_counter() - t0
-
-                        if diagnostic_dir is not None:
-                            save_capture_diagnostics(
-                                diagnostic_dir, turn, capture, threshold, heard,
-                                stt_s, stt_info, segments, input_reader.stats.overflows,
-                                stt_model, stt_beam,
-                            )
-
-                        if heard:
+                        heard, segments, stt_info, stt_s = transcribe(stt, capture.clip, stt_beam)
+                        addressed = engaged or mentions_tars(heard)
+                        if addressed:
+                            turn += 1
+                            # Side chatter that never names TARS is not saved.
+                            if diagnostic_dir is not None:
+                                save_capture_diagnostics(
+                                    diagnostic_dir, turn, capture, threshold, heard,
+                                    stt_s, stt_info, segments, input_reader.stats.overflows,
+                                    stt_model, stt_beam,
+                                )
+                        if not heard:
+                            outcome = "blank"
+                        elif not addressed:
+                            outcome = "ignored"
+                        else:
                             print(f"  Luca: {heard}")
-                            metrics = speak_stream(tars, voice, heard)
-                            # Only a reply that was generated and played in
-                            # full may become a quiet memory note.
-                            tars.submit_note()
+                            if is_sleep_command(heard):
+                                say_sleep_line(voice)
+                                outcome = "sleep"
+                            elif is_bare_address(heard):
+                                outcome = "address"
+                            else:
+                                metrics = speak_stream(tars, voice, heard)
+                                # Only a reply that was generated and played in
+                                # full may become a quiet memory note.
+                                tars.submit_note()
+                                outcome = "answered"
                 except MicrophoneStreamError:
                     raise
                 except Exception as exc:
                     # paused_input has already restarted the microphone, so a
                     # failed cloud request, audio device, or transcription ends
-                    # only this turn. A microphone that cannot restart is fatal.
+                    # only this conversation. A microphone that cannot restart is fatal.
                     report_turn_failure(exc, diagnostics)
-                    print("[sleep]\n")
-                    if hasattr(oww, "reset"):
-                        oww.reset()
-                    wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                    standby(cue=False)
                     break
 
-                if not heard:
-                    print("[sleep]\n")
-                    wake_ready_at = time.monotonic() + WAKE_COOLDOWN
+                if outcome == "sleep":
+                    standby(cue=False)  # the line was just spoken
                     break
+                if outcome in ("blank", "ignored"):
+                    if diagnostics:
+                        print("  [nothing recognized]" if outcome == "blank"
+                              else "  [heard speech without 'TARS'; ignored]")
+                    continue
 
+                now = time.monotonic()
+                idle_until = now + IDLE_LIMIT
+                waiting_for_name = False
+                if outcome == "address":
+                    engaged_until = now + FIRST_WAIT
+                    continue
                 if diagnostics:
                     print_stream_timing(metrics, capture, stt_s)
-
                 if hasattr(oww, "reset"):
                     oww.reset()
-                wait = FOLLOWUP_WAIT
+                engaged_until = time.monotonic() + ENGAGED_WAIT
 
 
 if __name__ == "__main__":

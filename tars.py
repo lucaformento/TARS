@@ -12,7 +12,8 @@ def main():
 
     tars = TARS(model=args.brain_model)
     tars.enable_memory_notes()
-    print(f"TARS is online with {tars.model}. Type 'quit' to exit.\n")
+    mode = tars.enable_saved_settings()
+    print(f"TARS is online with {tars.model}, personality {mode}. Type 'quit' to exit.\n")
 
     try:
         while True:

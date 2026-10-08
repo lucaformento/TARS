@@ -169,5 +169,82 @@ class BrainTests(unittest.TestCase):
             brain.TARS(model="made-up-model", client=FakeClient([]))
 
 
+class SavedSettingsTests(unittest.TestCase):
+    """Personality dials kept across restarts (Luca's October 8 choice)."""
+
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.memory_path = Path(temporary.name) / "memory.json"
+        self.settings_path = Path(temporary.name) / brain.SETTINGS_FILE
+        self.log = MagicMock()
+
+    def brain(self, *replies):
+        client = FakeClient([FakeStream([reply]) for reply in replies])
+        tars = brain.TARS(client=client, memory=MemoryStore(self.memory_path))
+        return tars, client
+
+    def test_change_survives_a_restart_until_reset(self):
+        first, _ = self.brain("Humor at 90.")
+        self.assertEqual(first.enable_saved_settings(log=self.log), "baseline")
+        first.respond("Change your humour to 90.")
+
+        second, client = self.brain("Noted.", "Back to baseline.")
+        self.assertEqual(second.enable_saved_settings(log=self.log), "custom")
+        self.assertEqual(second.settings["humor"], 90)
+        second.respond("Hi")
+        self.assertIn("- Humor: 90", client.messages.calls[0]["system"])
+        second.respond("Reset your settings")
+
+        third, _ = self.brain()
+        self.assertEqual(third.enable_saved_settings(log=self.log), "baseline")
+        self.log.assert_not_called()
+
+    def test_mode_survives_a_restart(self):
+        first, _ = self.brain("Buddy mode on.")
+        first.enable_saved_settings(log=self.log)
+        first.respond("Hey TARS, switch to buddy mode.")
+        second, _ = self.brain()
+        self.assertEqual(second.enable_saved_settings(log=self.log), "buddy mode")
+
+    def test_ordinary_turn_does_not_write_the_file(self):
+        tars, _ = self.brain("Hello.")
+        tars.enable_saved_settings(log=self.log)
+        tars.respond("How are you?")
+        self.assertFalse(self.settings_path.exists())
+
+    def test_without_enabling_nothing_is_read_or_written(self):
+        self.settings_path.write_text('{"version": 1, "dials": '
+                                      '{"humor": 1, "sarcasm": 1, "honesty": 1, "intellect": 1}}')
+        tars, _ = self.brain("Done.")
+        self.assertEqual(tars.settings, BASELINE_DIALS)
+        tars.respond("Set humor to 40")
+        self.assertIn('"humor": 1', self.settings_path.read_text())
+
+    def test_unreadable_file_starts_at_baseline_and_is_replaced_by_the_next_change(self):
+        for contents in ("not json", '{"version": 1, "dials": {"humor": 500}}', "[]"):
+            with self.subTest(contents=contents):
+                self.settings_path.write_text(contents)
+                log = MagicMock()
+                tars, _ = self.brain("Done.")
+                self.assertEqual(tars.enable_saved_settings(log=log), "baseline")
+                log.assert_called_once()
+                self.assertIn("starting at baseline", log.call_args.args[0])
+                tars.respond("Set humor to 40")
+                self.assertEqual(brain.read_settings(self.settings_path)["humor"], 40)
+
+    def test_failed_save_keeps_the_change_for_this_run(self):
+        tars, client = self.brain("Done.", "Hi.")
+        tars.enable_saved_settings(log=self.log)
+        with patch.object(brain, "write_settings", side_effect=OSError("read-only")):
+            tars.respond("Set humor to 40")
+        self.assertIn("lasts until TARS restarts", self.log.call_args.args[0])
+        tars.respond("Hello")
+        self.assertIn("- Humor: 40", client.messages.calls[1]["system"])
+
+
+BASELINE_DIALS = {"humor": 75, "sarcasm": 60, "honesty": 90, "intellect": 50}
+
+
 if __name__ == "__main__":
     unittest.main()

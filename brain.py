@@ -1,6 +1,9 @@
 """TARS brain: owns live state, conversation history, and Claude requests."""
 
+import json
 import os
+from pathlib import Path
+import tempfile
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -9,7 +12,7 @@ from memory import MemoryStore, entry_revision, handle_memory_turn, is_memory_re
 from memory_notes import (MAX_CHECKIN_CANDIDATES, NOTE_TIMEOUT_SECONDS, CheckinState,
                           MarkerFilter, NoteTaker, PendingCheckin, TurnRecord, notes_enabled,
                           store_applier)
-from personality import BASELINE, apply_command, build_personality
+from personality import BASELINE, apply_command, build_personality, describe_mode
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -27,6 +30,45 @@ CHECKIN_ANSWER_NOTE = (
     "acknowledge briefly. The application updates memory afterward, so do not say "
     "it was saved, confirmed, or deleted."
 )
+# Personality dials kept across restarts until Luca resets them; lives next to
+# memory.json and stays out of Git.
+SETTINGS_FILE = "personality-state.json"
+
+
+def read_settings(path):
+    """Return saved dials, or None without a file. Invalid contents raise ValueError."""
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as exc:
+        raise ValueError("not valid JSON") from exc
+    dials = raw.get("dials") if isinstance(raw, dict) and raw.get("version") == 1 else None
+    if (not isinstance(dials, dict) or set(dials) != set(BASELINE)
+            or not all(type(value) is int and 0 <= value <= 100 for value in dials.values())):
+        raise ValueError("unexpected contents")
+    return dials
+
+
+def write_settings(path, settings):
+    """Replace the settings file atomically so a crash never leaves half a file."""
+    path = Path(path)
+    payload = {"version": 1, "dials": {dial: settings[dial] for dial in BASELINE}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class TARS:
@@ -55,6 +97,32 @@ class TARS:
         self._session = 0
         self._pending = None    # (session, PendingCheckin) asked by the last reply
         self._completed = None  # inputs for one note job, set only by a finished turn
+        # Saved settings: off until enable_saved_settings(), for the same reason.
+        self._settings_path = None
+        self._log = print
+
+    def enable_saved_settings(self, log=print):
+        """Load dials kept from an earlier run; later changes are saved as they happen."""
+        self._log = log
+        path = self.memory.path.with_name(SETTINGS_FILE)
+        try:
+            saved = read_settings(path)
+        except (OSError, ValueError) as exc:
+            log(f"[settings] {path.name} could not be read ({exc}); starting at baseline. "
+                "The next personality change replaces it.")
+            saved = None
+        if saved:
+            self.settings.update(saved)
+        self._settings_path = path
+        return describe_mode(self.settings)
+
+    def _save_settings(self):
+        if self._settings_path is None:
+            return
+        try:
+            write_settings(self._settings_path, self.settings)
+        except OSError:
+            self._log("[settings] could not save the change; it lasts until TARS restarts.")
 
     # ---- memory v2 lifecycle ----
 
@@ -144,7 +212,10 @@ class TARS:
         self._completed = None
         pending = self._pending[1] if self._pending and self._pending[0] == self._session else None
         self._pending = None  # an answer counts for exactly this turn
+        before = dict(self.settings)
         note = apply_command(user_input, self.settings)
+        if self.settings != before:
+            self._save_settings()
         memory_request = is_memory_request(user_input)
         if memory_request and self.notes is not None:
             self.notes.wait_idle(MEMORY_COMMAND_WAIT_SECONDS)
