@@ -9,9 +9,11 @@ on a Raspberry Pi 5. Wake-word detection and speech recognition run on the
 device; response generation streams from the Anthropic API; speech is
 synthesized sentence-by-sentence through ElevenLabs (or local Piper) with
 one-sentence lookahead. The robot has application-owned personality state and a
-persistent, user-correctable memory. The articulated body is the next phase.
+persistent, user-correctable memory. The articulated, 3D-printed body is the next
+phase ([body plan](#body-next-phase)).
 
-**Status:** working voice prototype, validated live on the Pi. 127 offline tests.
+**Status:** working voice prototype, validated live on the Pi; the newest memory
+and conversation-flow changes await their live check. 252 offline tests.
 
 ## System overview
 
@@ -214,6 +216,41 @@ synthesis from ~2.1 s to 0.05 s for a short line
 | LLM | Anthropic SDK 0.111.0; default `claude-sonnet-4-6`; 20 s timeout, 1 retry; 160 output tokens for voice |
 | TTS | ElevenLabs `eleven_multilingual_v2` with a designed synthetic voice (not a clone), speed 0.92, 85% volume; 24 kHz s16le PCM; Piper 1.8.0 as the local fallback |
 
+## Body (next phase)
+
+The body follows the open-source [TARS-AI Community V3](https://github.com/TARS-AI-Community/TARS-AI/wiki/V3)
+design at 100% scale: three slabs, a torso holding the 5-inch screen between two
+walking legs, printed in PETG with TPU foot pads.
+
+<p align="center">
+  <img src="docs/assets/tars-size.svg" alt="TARS beside a 5 foot 8 person, reaching mid-shin, with 3/4, front and side views: about 26 cm tall, 28.5 cm wide and 6.5 cm deep" width="100%">
+</p>
+
+The sizes come from measuring the V3 print files at a
+[pinned revision](https://github.com/TARS-AI-Community/TARS-AI/tree/7593f8c8b63c35e3c07cc98665970fe55cee2c23/3d%20Printer%20Files),
+not from a finished build: the torso frame is 259 mm tall and 124 mm wide, each
+leg 79 mm wide, and every slab 65 mm deep. The files store parts rotated 45° for
+the print bed, so each part was rotated back to its smallest footprint before
+measuring. Expect up to about 1 cm of difference once assembled.
+
+| Part | Plan |
+| :--- | :--- |
+| Printer | Bambu Lab A1; its 256 mm bed fits every standard V3 part at 100% scale |
+| Structure | PETG Basic, chosen over Bambu's discontinued PETG HF for strength across layers (39 vs 23 MPa in Bambu's data sheets); TPU 95A foot pads |
+| Face | Waveshare 5-inch DSI LCD, 800 × 480, mounted upright in the torso |
+| Motion | Four MG996R servos for the legs (arms add two MG996R and four MG90S) on a PCA9685 I²C driver |
+| Power | 3S 2200 mAh LiPo feeding separate 6 V servo and 5 V Pi rails, with an INA260 battery monitor. A regulator cannot negotiate USB-PD, so the Pi 5 needs Raspberry Pi's `PSU_MAX_CURRENT=5000` setting, applied only after a load test |
+| On/off | One push button: press to power on; the Pi shuts down cleanly, then cuts its own power through a latching switch. A physical motor kill works independently of voice |
+
+The power system stays on hold until the servos' real current draw is measured
+on the bench. Motion will go through a bounded movement API with calibrated
+joint limits, so the language model never drives a servo directly.
+
+Based on the mechanical puppet designs by Christopher Nolan, Nathan Crowley, and
+the production team who originally brought TARS to life; miniaturized CAD by
+Charlie Diaz, with additional modifications by the TARS-AI Community (CC BY-NC
+4.0). The sizing sketch is an original drawing from those measurements.
+
 ## Repository layout
 
 | Path | Responsibility |
@@ -306,7 +343,10 @@ python -m unittest discover -s tests
 - [ ] Optional "machine body" output filter
 - [x] Model-judged memory notes with daily check-ins (pending live acceptance)
 - [ ] Continuous capture with echo control for barge-in
+- [x] Body sizing measured from the V3 print files; parts list checked for compatibility
+- [ ] First fit and calibration prints (printer arriving in November)
 - [ ] Articulated, 3D-printed body with servo control
+- [ ] Battery power with one-button on/off
 
 ---
 
