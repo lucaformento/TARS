@@ -16,7 +16,7 @@ import tempfile
 import threading
 import uuid
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -37,6 +37,21 @@ MAX_TOTAL_ENTRIES = 500
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+# Luca, October 10: a check-in asks about older guesses only. In the live test
+# TARS asked about something said two minutes earlier, which felt like an echo.
+CHECKIN_MIN_AGE = timedelta(days=1)
+
+
+def _created_before(entry, cutoff):
+    try:
+        created = datetime.fromisoformat(entry["created"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if created.tzinfo is None:
+        return False
+    return created <= cutoff
 
 
 def _normalize(text):
@@ -479,9 +494,11 @@ class MemoryStore:
         return self.add(text, kind=kind, source="inferred")
 
     @_locked
-    def checkin_candidates(self, limit):
-        """Unconfirmed, non-joke entries for a check-in, newest first."""
-        guesses = [e for e in self.entries if e["source"] == "inferred" and e["kind"] != "bit"]
+    def checkin_candidates(self, limit, now=None):
+        """Unconfirmed, non-joke entries at least CHECKIN_MIN_AGE old, newest first."""
+        cutoff = (now or datetime.now(timezone.utc)) - CHECKIN_MIN_AGE
+        guesses = [e for e in self.entries if e["source"] == "inferred" and e["kind"] != "bit"
+                   and _created_before(e, cutoff)]
         guesses.sort(key=lambda e: e["updated"], reverse=True)
         return [dict(e) for e in guesses[:limit]]
 

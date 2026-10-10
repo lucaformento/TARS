@@ -261,12 +261,20 @@ def _strip_wrappers(command):
     return command
 
 
+# The prompt's dial list already shows the new values, so every note names the
+# old value too. Without it, "change your humor to 90" was answered with "it's
+# already at 90" in the October 10 live test.
+_ALREADY_APPLIED = "The dial values above already include this change."
+
+
 def _set_dials(settings, changes):
-    changed = []
+    parts = []
     for dial, value in changes:
-        settings[dial] = max(0, min(100, value))
-        changed.append(f"{dial} to {settings[dial]}")
-    return f"Luca adjusted {', '.join(changed)}. Acknowledge the change briefly."
+        old = settings[dial]
+        new = settings[dial] = max(0, min(100, value))
+        parts.append(f"{dial} from {old} to {new}" if new != old
+                     else f"{dial} to {new}, which it already was")
+    return f"Luca just set {', '.join(parts)}. {_ALREADY_APPLIED} Acknowledge it briefly."
 
 
 def _nudge(settings, dial, sign):
@@ -277,7 +285,8 @@ def _nudge(settings, dial, sign):
         limit = "maximum" if sign > 0 else "minimum"
         return (f"Luca asked to turn {dial} {direction}, but it is already at its "
                 f"{limit}, {old}. Say so briefly.")
-    return f"Luca turned {dial} {direction} to {settings[dial]}. Acknowledge the change briefly."
+    return (f"Luca just turned {dial} {direction} from {old} to {settings[dial]}. "
+            f"{_ALREADY_APPLIED} Acknowledge it briefly.")
 
 
 def apply_command(text, settings):
@@ -291,19 +300,20 @@ def apply_command(text, settings):
 
     if _whole(_RESET, command):
         settings.update(BASELINE)
-        return "Luca reset the personality dials to baseline. Acknowledge it briefly."
+        return ("Luca just reset the personality dials to baseline. "
+                f"{_ALREADY_APPLIED} Acknowledge it briefly.")
 
     match = _whole(_PRESET_OFF, command)
     if match:
         settings.update(BASELINE)
-        return (f"Luca turned off {_preset(match['preset'])}; the dials are back at "
-                "baseline. Acknowledge it briefly.")
+        return (f"Luca just turned off {_preset(match['preset'])}; the dials are back at "
+                f"baseline. {_ALREADY_APPLIED} Acknowledge it briefly.")
 
     match = _whole(_PRESET_ON, command)
     if match:
         name = _preset(match["preset"])
         settings.update(PRESETS[name])
-        return f"Luca switched you to {name}. Acknowledge the change briefly."
+        return f"Luca just switched you to {name}. {_ALREADY_APPLIED} Acknowledge it briefly."
 
     if _whole(_QUERY, command):
         return (

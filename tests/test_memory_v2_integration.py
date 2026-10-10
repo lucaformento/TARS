@@ -1,7 +1,7 @@
 """Memory v2 phase 2: store locking, the brain's note and check-in flow, and
 stale-result protection. Fake Anthropic clients and a fake clock; no paid calls."""
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import importlib
 import json
 from pathlib import Path
@@ -22,6 +22,7 @@ dotenv_stub.load_dotenv = MagicMock()
 with patch.dict(sys.modules, {"anthropic": anthropic_stub, "dotenv": dotenv_stub}):
     sys.modules.pop("brain", None)
     brain = importlib.import_module("brain")
+import memory as memory_module
 import memory_notes as notes
 from memory import MemoryStore, entry_revision
 from memory_notes import Action, CheckinState, NoteTaker, PendingCheckin, TurnRecord, store_applier
@@ -135,9 +136,26 @@ class StoreTests(unittest.TestCase):
         self.store.add("I prefer PETG")
         first = self.store.add_note("Luca is getting a 3D printer", "fact")
         second = self.store.add_note("Luca is building an arm", "fact")
-        self.assertEqual([e["id"] for e in self.store.checkin_candidates(5)],
+        later = datetime.now(timezone.utc) + timedelta(days=2)
+        self.assertEqual([e["id"] for e in self.store.checkin_candidates(5, now=later)],
                          [second["id"], first["id"]])
-        self.assertEqual(len(self.store.checkin_candidates(1)), 1)
+        self.assertEqual(len(self.store.checkin_candidates(1, now=later)), 1)
+
+    def test_check_ins_skip_guesses_under_a_day_old(self):
+        guess = self.store.add_note("Luca is getting a 3D printer", "fact")
+        created = datetime.fromisoformat(guess["created"])
+        self.assertEqual(self.store.checkin_candidates(5), [])
+        self.assertEqual(self.store.checkin_candidates(5, now=created + timedelta(hours=23)), [])
+        self.assertEqual([e["id"] for e in self.store.checkin_candidates(
+            5, now=created + timedelta(days=1))], [guess["id"]])
+
+    def test_guess_with_an_unreadable_date_is_never_offered(self):
+        guess = self.store.add_note("Luca is getting a 3D printer", "fact")
+        with self.store.lock:
+            self.store._commit([dict(e, created="not a date") if e["id"] == guess["id"] else e
+                                for e in self.store.entries])
+        self.assertEqual(self.store.checkin_candidates(
+            5, now=datetime.now(timezone.utc) + timedelta(days=30)), [])
 
     def test_concurrent_writers_leave_a_consistent_file(self):
         def writer(prefix):
@@ -314,8 +332,19 @@ class BrainFlowTests(unittest.TestCase):
 
     # ---- check-ins ----
 
-    def seed_guess(self):
-        return self.store.add_note("Luca is getting a 3D printer around November 13", "fact")
+    def seed_guess(self, days_old=2):
+        """A quiet note; check-ins only ask about guesses at least a day old."""
+        when = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat(
+            timespec="microseconds")
+        with patch.object(memory_module, "_now", return_value=when):
+            return self.store.add_note("Luca is getting a 3D printer around November 13", "fact")
+
+    def test_guess_from_minutes_ago_is_not_offered(self):
+        self.seed_guess(days_old=0)
+        tars = self.make("Sounds fun.", note_client=NoteClient())
+        self.say(tars, "I'm planning the robot body this weekend.")
+        self.assertNotIn("CHECK-IN (optional)", self.system(tars))
+        self.assertFalse((self.dir / "memory-state.json").exists())  # nothing reserved
 
     def test_marked_check_in_is_spoken_once_recorded_and_confirmable(self):
         guess = self.seed_guess()

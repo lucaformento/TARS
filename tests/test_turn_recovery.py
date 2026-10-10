@@ -270,11 +270,16 @@ class ConversationFlowTests(LoopHarness, unittest.TestCase):
         self.assertEqual(self.spoken_to_brain(),
                          ["hello", "TARS, what time is it?", "and tomorrow?"])
 
-    def test_bare_name_listens_without_a_reply(self):
-        with self.assertRaises(KeyboardInterrupt):
+    def test_bare_name_gets_yes_and_a_full_conversation_window(self):
+        # FIRST_WAIT 0 proves the window after "Yes?" is the 30 s one, not the
+        # short post-wake wait that made Luca's question go unanswered.
+        with patch.object(voice_frontend, "FIRST_WAIT", 0.0), self.assertRaises(KeyboardInterrupt):
             self.run_loop([capture(), silence(), capture(), capture(), silence(), silence()],
-                          transcribe=heard("hello", "Hey TARS.", "what's the plan?"))
-        self.assertEqual(self.spoken_to_brain(), ["hello", "what's the plan?"])
+                          transcribe=heard("TARS, hello", "Hey TARS.", "what's the plan?"))
+        self.assertEqual(self.spoken_to_brain(), ["TARS, hello", "what's the plan?"])
+        self.assertEqual(self.lines_spoken(), [voice_frontend.ACK_LINE, voice_frontend.SLEEP_LINE])
+        self.assertIn("  TARS: Yes?", self.output)
+        self.assertIn("  TARS: Standing by.", self.output)
 
     def test_go_to_sleep_says_the_standby_line_without_a_brain_request(self):
         with self.assertRaises(KeyboardInterrupt):

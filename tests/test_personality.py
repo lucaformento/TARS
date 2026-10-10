@@ -44,8 +44,8 @@ class PersonalityTests(unittest.TestCase):
         note = apply_command(
             "Set humor to 82 and adjust sarcasm to twenty five.", settings
         )
-        self.assertIn("humor to 82", note)
-        self.assertIn("sarcasm to 25", note)
+        self.assertIn("humor from 75 to 82", note)
+        self.assertIn("sarcasm from 60 to 25", note)
         self.assertEqual(settings["humor"], 82)
         self.assertEqual(settings["sarcasm"], 25)
 
@@ -78,7 +78,7 @@ class ForgivingCommandTests(unittest.TestCase):
             with self.subTest(said=said):
                 note, settings = run(said)
                 self.assertEqual(settings["humor"], 90)
-                self.assertIn("humor to 90", note)
+                self.assertIn("humor from 75 to 90", note)
 
     def test_intelligence_is_an_alias_for_intellect(self):
         _, settings = run("Set your intelligence to 80")
@@ -160,6 +160,19 @@ class ForgivingCommandTests(unittest.TestCase):
                 self.assertEqual(settings, BASELINE)
         self.assertIn("nothing changed", NEAR_MISS_NOTE)
         self.assertIn("Never mention an app", NEAR_MISS_NOTE)
+
+    def test_change_notes_name_the_old_value_and_say_it_is_already_applied(self):
+        note, _ = run("Change your humor to 90.")
+        self.assertIn("from 75 to 90", note)
+        self.assertIn("already include this change", note)
+        note, _ = run("Set humor to 75")
+        self.assertIn("to 75, which it already was", note)
+        note, _ = run("Be funnier.")
+        self.assertIn("up from 75 to 85", note)
+        for said in ("Switch to buddy mode.", "Reset your settings.", "Turn off buddy mode."):
+            with self.subTest(said=said):
+                note, _ = run(said, PRESETS["know-it-all"])
+                self.assertIn("already include this change", note)
 
 
 class ModeTests(unittest.TestCase):

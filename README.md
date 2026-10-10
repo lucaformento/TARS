@@ -12,8 +12,9 @@ one-sentence lookahead. The robot has application-owned personality state and a
 persistent, user-correctable memory. The articulated, 3D-printed body is the next
 phase ([body plan](#body-next-phase)).
 
-**Status:** working voice prototype, validated live on the Pi; the newest memory
-and conversation-flow changes await their live check. 252 offline tests.
+**Status:** working voice prototype, validated live on the Pi. The memory and
+conversation-flow features went through a 25-turn live check; the fixes it
+prompted await a short retest. 257 offline tests.
 
 ## System overview
 
@@ -53,7 +54,8 @@ One turn:
 6. **Stay in the conversation.** For 30 s after each reply TARS answers
    anything, with no wake word. Then he keeps listening but answers only
    sentences that include "TARS" ("what do you think, TARS?"); everything else
-   is transcribed locally and dropped. "Go to sleep", or 10 minutes without
+   is transcribed locally and dropped. Saying just "Hey TARS" gets a spoken
+   "Yes?" and reopens the 30 s window. "Go to sleep", or 10 minutes without
    anyone talking to him, returns him to wake-word standby with a short spoken
    line. Coughs, laughs, and blank transcripts never end a conversation.
 
@@ -116,7 +118,9 @@ guess can never silently become a fact.
   bounded memory block the reply already sent. It never sends the whole
   store.
 - **Check-ins:** at most once per local day, TARS may ask about one directly
-  relevant guess ("You mentioned a printer in November. Still the plan?").
+  relevant guess that is at least a day old ("You mentioned a printer in
+  November. Still the plan?"). The note-taker is offered "confirm" and
+  "retract" only while such a question is waiting for an answer.
   - **Enforcement:** the daily allowance is reserved in a private state file
     before generation.
   - **Marking:** the question must begin with a marker that is removed before
@@ -262,7 +266,7 @@ Charlie Diaz, with additional modifications by the TARS-AI Community (CC BY-NC
 | [`memory.py`](memory.py) | Memory store, command parsing, inference, bounded retrieval |
 | [`personality.py`](personality.py) | Pure prompt building and dial/preset command parsing |
 | [`tars.py`](tars.py) | Terminal front end for the same brain |
-| [`tests/`](tests) | 252 offline tests with fake devices, network, and models |
+| [`tests/`](tests) | 257 offline tests with fake devices, network, and models |
 | [`docs/`](docs) | Decision record, measurements, and design notes |
 
 ## Running it
@@ -333,7 +337,7 @@ python -m unittest discover -s tests
 ## Roadmap
 
 - [x] Wake word, follow-up loop, and streamed sentence speech
-- [x] Name-aware conversation flow and forgiving personality commands (pending live acceptance)
+- [x] Name-aware conversation flow and forgiving personality commands
 - [x] One-sentence lookahead with zero-gap transitions
 - [x] Persistent memory with confirmed/inferred provenance
 - [x] Turn-level failure recovery, verified under a live network outage
@@ -341,7 +345,7 @@ python -m unittest discover -s tests
 - [ ] First-response latency: endpoint tuning, Flash TTS for sentence one
 - [x] Designed TARS-style voice, tuned by ear on the Pi speaker
 - [ ] Optional "machine body" output filter
-- [x] Model-judged memory notes with daily check-ins (pending live acceptance)
+- [x] Model-judged memory notes with daily check-ins
 - [ ] Continuous capture with echo control for barge-in
 - [x] Body sizing measured from the V3 print files; parts list checked for compatibility
 - [ ] First fit and calibration prints (printer arriving in November)

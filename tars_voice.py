@@ -58,10 +58,11 @@ MAX_UTTERANCE = 30.0      # long enough for a natural thought; still bounds nois
 MIN_SPEECH = 0.4          # minimum accumulated above-threshold speech
 PRE_ROLL = 0.5            # audio retained before the first above-threshold frame
 TAIL_PAD = 0.5            # quiet audio retained after the final loud frame
-FIRST_WAIT = 6.0          # after the wake word or a bare "TARS", how long to wait for you
+FIRST_WAIT = 6.0          # after the wake word, how long to wait for you
 ENGAGED_WAIT = 30.0       # after he answers, how long he answers without hearing his name
 IDLE_LIMIT = 600.0        # without anyone talking to him, how long before standby
 SLEEP_LINE = "Standing by."  # spoken on return to standby; wording is Luca's call
+ACK_LINE = "Yes?"            # Luca, Oct 10: the answer to a bare "Hey TARS" mid-conversation
 PHRASE_CACHE = Path.home() / ".cache" / "tars" / "phrases"
 INPUT_BUFFER_SECONDS = 3.0  # keep draining USB while wake inference briefly stalls
 LUCA_PRONUNCIATION = "[[\u02c8lu\u02d0ka]]"  # Italian: LOO-kah, stress first
@@ -513,12 +514,13 @@ def cached_phrase(voice, text, directory=PHRASE_CACHE):
     return prepared
 
 
-def say_sleep_line(voice):
-    """Speak the standby line. Piper is local; cloud audio is reused from disk."""
+def say_line(voice, text):
+    """Speak a fixed line. Piper is local; cloud audio is downloaded once, then reused."""
+    print(f"  TARS: {text}")
     if isinstance(voice, ElevenLabsVoice):
         voice.ensure_output()
-        return voice.play(cached_phrase(voice, SLEEP_LINE))
-    return speak(voice, SLEEP_LINE)
+        return voice.play(cached_phrase(voice, text))
+    return speak(voice, text)
 
 
 def _stream_metrics(cloud):
@@ -860,7 +862,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
             if cue:
                 try:
                     with paused_input(buffered_input):
-                        say_sleep_line(voice)
+                        say_line(voice, SLEEP_LINE)
                 except MicrophoneStreamError:
                     raise
                 except Exception as exc:
@@ -961,9 +963,12 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                         else:
                             print(f"  Luca: {heard}")
                             if is_sleep_command(heard):
-                                say_sleep_line(voice)
+                                say_line(voice, SLEEP_LINE)
                                 outcome = "sleep"
                             elif is_bare_address(heard):
+                                # A spoken "Yes?" tells Luca he was heard; silence
+                                # made him wait out the window in the live test.
+                                say_line(voice, ACK_LINE)
                                 outcome = "address"
                             else:
                                 metrics = speak_stream(tars, voice, heard)
@@ -994,7 +999,7 @@ def run_conversation(voice, diagnostics=False, diagnostic_dir=None, brain_model=
                 idle_until = now + IDLE_LIMIT
                 waiting_for_name = False
                 if outcome == "address":
-                    engaged_until = now + FIRST_WAIT
+                    engaged_until = now + ENGAGED_WAIT
                     continue
                 if diagnostics:
                     print_stream_timing(metrics, capture, stt_s)

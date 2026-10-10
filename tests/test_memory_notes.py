@@ -461,6 +461,19 @@ class NoteTakerTests(unittest.TestCase):
         self.assertIn("TARS asked: Still the plan?", content)
         self.assertIn("(empty)", content)
 
+    def test_confirm_and_retract_are_offered_only_with_a_pending_check_in(self):
+        def offered(request):
+            return request["tools"][0]["input_schema"]["properties"]["action"]["enum"]
+
+        self.block = None
+        plain = build_request(self.record())
+        self.assertEqual(offered(plain), ["none", "add"])
+        self.assertNotIn("confirm", plain["system"])
+        pending = PendingCheckin("m_1", "rev", "Luca is getting a printer", "Still the plan?")
+        asked = build_request(self.record(checkin=pending))
+        self.assertEqual(offered(asked), ["none", "add", "confirm", "retract"])
+        self.assertIn("confirm or retract", asked["system"])
+
     def test_memory_block_is_bounded_to_whole_lines(self):
         line = "- [CONFIRMED] Luca likes " + "x" * 60
         self.block = "\n".join([line] * 200)  # about 17,000 characters
